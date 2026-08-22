@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "一二布布私人桌宠",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "identifier": "com.yierbubu.desktop-pet",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -36,6 +36,14 @@
         "enable": true,
         "scope": ["$APPDATA/asset-packs/**"]
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MTQ3OTVCREZFNjEyRjUKUldUMUV1YmZXM2tVdU0rYWhPVEljQ1dwNENPeEk3bm01NnRHL1pRY081RzNZZDdKb3pqMWxBWVgK",
+      "endpoints": [
+        "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/latest.json"
+      ]
     }
   },
   "bundle": {
