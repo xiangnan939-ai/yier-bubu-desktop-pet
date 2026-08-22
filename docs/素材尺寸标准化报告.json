@@ -1,0 +1,880 @@
+{
+  "settings": {
+    "canvas": 512,
+    "target_height": 400,
+    "max_width": 472,
+    "bottom_margin": 32
+  },
+  "files": [
+    {
+      "file": "一二/angry（原地跺脚）.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "240x240",
+      "source_content": "179x223",
+      "output_canvas": "512x512",
+      "output_content": "321x400",
+      "scale": 1.7937
+    },
+    {
+      "file": "一二/angry（坐在地上左右蹦）.gif",
+      "source_frames": 32,
+      "output_frames": 32,
+      "source_canvas": "240x240",
+      "source_content": "240x162",
+      "output_canvas": "512x512",
+      "output_content": "472x319",
+      "scale": 1.9667
+    },
+    {
+      "file": "一二/angry（气鼓鼓）.gif",
+      "source_frames": 30,
+      "output_frames": 30,
+      "source_canvas": "240x240",
+      "source_content": "209x239",
+      "output_canvas": "512x512",
+      "output_content": "350x400",
+      "scale": 1.6736
+    },
+    {
+      "file": "一二/angry（身后起火）.gif",
+      "source_frames": 5,
+      "output_frames": 5,
+      "source_canvas": "118x118",
+      "source_content": "118x114",
+      "output_canvas": "512x512",
+      "output_content": "414x400",
+      "scale": 3.5088
+    },
+    {
+      "file": "一二/charging（电量低于50％且无互动且在充电时显示）.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "240x240",
+      "source_content": "232x227",
+      "output_canvas": "512x512",
+      "output_content": "409x400",
+      "scale": 1.7621
+    },
+    {
+      "file": "一二/click（回头看屏幕）.gif",
+      "source_frames": 21,
+      "output_frames": 21,
+      "source_canvas": "320x320",
+      "source_content": "241x298",
+      "output_canvas": "512x512",
+      "output_content": "323x400",
+      "scale": 1.3423
+    },
+    {
+      "file": "一二/click（被摸痒了）.gif",
+      "source_frames": 8,
+      "output_frames": 8,
+      "source_canvas": "240x240",
+      "source_content": "190x211",
+      "output_canvas": "512x512",
+      "output_content": "360x400",
+      "scale": 1.8957
+    },
+    {
+      "file": "一二/dance（跳舞）.gif",
+      "source_frames": 44,
+      "output_frames": 44,
+      "source_canvas": "300x336",
+      "source_content": "262x293",
+      "output_canvas": "512x512",
+      "output_content": "358x400",
+      "scale": 1.3652
+    },
+    {
+      "file": "一二/drink.gif",
+      "source_frames": 10,
+      "output_frames": 10,
+      "source_canvas": "640x640",
+      "source_content": "553x617",
+      "output_canvas": "512x512",
+      "output_content": "359x400",
+      "scale": 0.6483
+    },
+    {
+      "file": "一二/eat（吃面）.gif",
+      "source_frames": 96,
+      "output_frames": 96,
+      "source_canvas": "240x240",
+      "source_content": "240x233",
+      "output_canvas": "512x512",
+      "output_content": "412x400",
+      "scale": 1.7167
+    },
+    {
+      "file": "一二/eat（吃饭）.gif",
+      "source_frames": 33,
+      "output_frames": 33,
+      "source_canvas": "240x240",
+      "source_content": "220x231",
+      "output_canvas": "512x512",
+      "output_content": "381x400",
+      "scale": 1.7316
+    },
+    {
+      "file": "一二/happy（上下跳）.gif",
+      "source_frames": 18,
+      "output_frames": 18,
+      "source_canvas": "240x240",
+      "source_content": "156x239",
+      "output_canvas": "512x512",
+      "output_content": "261x400",
+      "scale": 1.6736
+    },
+    {
+      "file": "一二/happy（原地扭1）.gif",
+      "source_frames": 16,
+      "output_frames": 16,
+      "source_canvas": "240x240",
+      "source_content": "186x237",
+      "output_canvas": "512x512",
+      "output_content": "314x400",
+      "scale": 1.6878
+    },
+    {
+      "file": "一二/happy（原地扭2）.gif",
+      "source_frames": 16,
+      "output_frames": 16,
+      "source_canvas": "240x240",
+      "source_content": "190x227",
+      "output_canvas": "512x512",
+      "output_content": "335x400",
+      "scale": 1.7621
+    },
+    {
+      "file": "一二/hot.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "630x630",
+      "source_content": "620x625",
+      "output_canvas": "512x512",
+      "output_content": "397x400",
+      "scale": 0.64
+    },
+    {
+      "file": "一二/idel.gif",
+      "source_frames": 34,
+      "output_frames": 34,
+      "source_canvas": "240x240",
+      "source_content": "215x209",
+      "output_canvas": "512x512",
+      "output_content": "411x400",
+      "scale": 1.9139
+    },
+    {
+      "file": "一二/look（拿放大镜看着屏幕方向）.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "86x86",
+      "source_content": "86x86",
+      "output_canvas": "512x512",
+      "output_content": "400x400",
+      "scale": 4.6512
+    },
+    {
+      "file": "一二/low_battery.gif",
+      "source_frames": 18,
+      "output_frames": 18,
+      "source_canvas": "90x90",
+      "source_content": "87x90",
+      "output_canvas": "512x512",
+      "output_content": "387x400",
+      "scale": 4.4444
+    },
+    {
+      "file": "一二/message.gif",
+      "source_frames": 3,
+      "output_frames": 3,
+      "source_canvas": "240x240",
+      "source_content": "215x201",
+      "output_canvas": "512x512",
+      "output_content": "428x400",
+      "scale": 1.99
+    },
+    {
+      "file": "一二/sad（大哭）.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "240x203",
+      "source_content": "175x202",
+      "output_canvas": "512x512",
+      "output_content": "347x400",
+      "scale": 1.9802
+    },
+    {
+      "file": "一二/sad（小哭）.gif",
+      "source_frames": 3,
+      "output_frames": 3,
+      "source_canvas": "240x240",
+      "source_content": "181x226",
+      "output_canvas": "512x512",
+      "output_content": "320x400",
+      "scale": 1.7699
+    },
+    {
+      "file": "一二/sit（呆坐）.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "480x365",
+      "source_content": "280x349",
+      "output_canvas": "512x512",
+      "output_content": "321x400",
+      "scale": 1.1461
+    },
+    {
+      "file": "一二/sit（坐着吃棒棒糖）.gif",
+      "source_frames": 8,
+      "output_frames": 8,
+      "source_canvas": "228x255",
+      "source_content": "198x247",
+      "output_canvas": "512x512",
+      "output_content": "321x400",
+      "scale": 1.6194
+    },
+    {
+      "file": "一二/sleep1.gif",
+      "source_frames": 15,
+      "output_frames": 15,
+      "source_canvas": "240x240",
+      "source_content": "235x191",
+      "output_canvas": "512x512",
+      "output_content": "472x384",
+      "scale": 2.0085
+    },
+    {
+      "file": "一二/sleep2.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "239x227",
+      "source_content": "204x187",
+      "output_canvas": "512x512",
+      "output_content": "436x400",
+      "scale": 2.139
+    },
+    {
+      "file": "一二/sleep3.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "240x240",
+      "source_content": "212x192",
+      "output_canvas": "512x512",
+      "output_content": "442x400",
+      "scale": 2.0833
+    },
+    {
+      "file": "一二/wake（伸懒腰）.gif",
+      "source_frames": 22,
+      "output_frames": 22,
+      "source_canvas": "500x500",
+      "source_content": "428x477",
+      "output_canvas": "512x512",
+      "output_content": "359x400",
+      "scale": 0.8386
+    },
+    {
+      "file": "一二/wake（艰难起床）.gif",
+      "source_frames": 20,
+      "output_frames": 20,
+      "source_canvas": "240x240",
+      "source_content": "235x226",
+      "output_canvas": "512x512",
+      "output_content": "416x400",
+      "scale": 1.7699
+    },
+    {
+      "file": "一二/wake（迅速）.gif",
+      "source_frames": 9,
+      "output_frames": 9,
+      "source_canvas": "500x500",
+      "source_content": "500x470",
+      "output_canvas": "512x512",
+      "output_content": "426x400",
+      "scale": 0.8511
+    },
+    {
+      "file": "一二/walk（向右走）.gif",
+      "source_frames": 16,
+      "output_frames": 16,
+      "source_canvas": "240x240",
+      "source_content": "168x230",
+      "output_canvas": "512x512",
+      "output_content": "292x400",
+      "scale": 1.7391
+    },
+    {
+      "file": "一二/walk（向右跑）.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "245x240",
+      "source_content": "207x240",
+      "output_canvas": "512x512",
+      "output_content": "345x400",
+      "scale": 1.6667
+    },
+    {
+      "file": "一二/watching（向左定睛观看）.gif",
+      "source_frames": 84,
+      "output_frames": 67,
+      "source_canvas": "800x755",
+      "source_content": "798x754",
+      "output_canvas": "512x512",
+      "output_content": "423x400",
+      "scale": 0.5305
+    },
+    {
+      "file": "一二/watching（寻找目标）.gif",
+      "source_frames": 10,
+      "output_frames": 10,
+      "source_canvas": "240x240",
+      "source_content": "240x212",
+      "output_canvas": "512x512",
+      "output_content": "453x400",
+      "scale": 1.8868
+    },
+    {
+      "file": "一二/work（敲键盘1）.gif",
+      "source_frames": 16,
+      "output_frames": 16,
+      "source_canvas": "640x789",
+      "source_content": "637x565",
+      "output_canvas": "512x512",
+      "output_content": "451x400",
+      "scale": 0.708
+    },
+    {
+      "file": "一二/work（敲键盘2）.gif",
+      "source_frames": 8,
+      "output_frames": 8,
+      "source_canvas": "240x240",
+      "source_content": "239x198",
+      "output_canvas": "512x512",
+      "output_content": "472x391",
+      "scale": 1.9749
+    },
+    {
+      "file": "一二/work（看书）.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "240x240",
+      "source_content": "150x189",
+      "output_canvas": "512x512",
+      "output_content": "317x400",
+      "scale": 2.1164
+    },
+    {
+      "file": "布布/angry（原地跺脚）.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "480x480",
+      "source_content": "356x439",
+      "output_canvas": "512x512",
+      "output_content": "324x400",
+      "scale": 0.9112
+    },
+    {
+      "file": "布布/angry（双手叉腰说哼）.gif",
+      "source_frames": 20,
+      "output_frames": 20,
+      "source_canvas": "240x240",
+      "source_content": "218x219",
+      "output_canvas": "512x512",
+      "output_content": "398x400",
+      "scale": 1.8265
+    },
+    {
+      "file": "布布/angry（坐在地上左右蹦）.gif",
+      "source_frames": 32,
+      "output_frames": 32,
+      "source_canvas": "240x240",
+      "source_content": "240x162",
+      "output_canvas": "512x512",
+      "output_content": "472x319",
+      "scale": 1.9667
+    },
+    {
+      "file": "布布/angry（拳打被子）.gif",
+      "source_frames": 5,
+      "output_frames": 5,
+      "source_canvas": "360x360",
+      "source_content": "360x276",
+      "output_canvas": "512x512",
+      "output_content": "472x362",
+      "scale": 1.3111
+    },
+    {
+      "file": "布布/angry（气鼓鼓）.gif",
+      "source_frames": 29,
+      "output_frames": 29,
+      "source_canvas": "240x240",
+      "source_content": "210x240",
+      "output_canvas": "512x512",
+      "output_content": "350x400",
+      "scale": 1.6667
+    },
+    {
+      "file": "布布/angry（胡闹）.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "240x240",
+      "source_content": "228x203",
+      "output_canvas": "512x512",
+      "output_content": "449x400",
+      "scale": 1.9704
+    },
+    {
+      "file": "布布/angry（骂）.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "240x240",
+      "source_content": "223x226",
+      "output_canvas": "512x512",
+      "output_content": "395x400",
+      "scale": 1.7699
+    },
+    {
+      "file": "布布/charging（电量低于50％且无互动且在充电时显示）.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "480x480",
+      "source_content": "456x451",
+      "output_canvas": "512x512",
+      "output_content": "404x400",
+      "scale": 0.8869
+    },
+    {
+      "file": "布布/click（从椅子上摔倒）.gif",
+      "source_frames": 25,
+      "output_frames": 25,
+      "source_canvas": "240x240",
+      "source_content": "240x237",
+      "output_canvas": "512x512",
+      "output_content": "405x400",
+      "scale": 1.6878
+    },
+    {
+      "file": "布布/click（被摸痒了）.gif",
+      "source_frames": 8,
+      "output_frames": 8,
+      "source_canvas": "240x240",
+      "source_content": "220x235",
+      "output_canvas": "512x512",
+      "output_content": "374x400",
+      "scale": 1.7021
+    },
+    {
+      "file": "布布/dance（优雅的跳舞）.gif",
+      "source_frames": 18,
+      "output_frames": 18,
+      "source_canvas": "240x240",
+      "source_content": "223x224",
+      "output_canvas": "512x512",
+      "output_content": "398x400",
+      "scale": 1.7857
+    },
+    {
+      "file": "布布/dance（街舞）.gif",
+      "source_frames": 10,
+      "output_frames": 10,
+      "source_canvas": "240x240",
+      "source_content": "240x239",
+      "output_canvas": "512x512",
+      "output_content": "402x400",
+      "scale": 1.6736
+    },
+    {
+      "file": "布布/dance（跳舞）.gif",
+      "source_frames": 16,
+      "output_frames": 16,
+      "source_canvas": "240x240",
+      "source_content": "187x234",
+      "output_canvas": "512x512",
+      "output_content": "320x400",
+      "scale": 1.7094
+    },
+    {
+      "file": "布布/drag.gif",
+      "source_frames": 10,
+      "output_frames": 10,
+      "source_canvas": "240x240",
+      "source_content": "240x238",
+      "output_canvas": "512x512",
+      "output_content": "403x400",
+      "scale": 1.6807
+    },
+    {
+      "file": "布布/drink（倒水提醒喝水）.gif",
+      "source_frames": 39,
+      "output_frames": 39,
+      "source_canvas": "240x240",
+      "source_content": "240x240",
+      "output_canvas": "512x512",
+      "output_content": "400x400",
+      "scale": 1.6667
+    },
+    {
+      "file": "布布/drink（喝水）.gif",
+      "source_frames": 7,
+      "output_frames": 7,
+      "source_canvas": "512x512",
+      "source_content": "342x450",
+      "output_canvas": "512x512",
+      "output_content": "304x400",
+      "scale": 0.8889
+    },
+    {
+      "file": "布布/eat（吃冰激凌）.gif",
+      "source_frames": 33,
+      "output_frames": 33,
+      "source_canvas": "240x240",
+      "source_content": "205x238",
+      "output_canvas": "512x512",
+      "output_content": "345x400",
+      "scale": 1.6807
+    },
+    {
+      "file": "布布/eat（吃面）.gif",
+      "source_frames": 3,
+      "output_frames": 3,
+      "source_canvas": "300x300",
+      "source_content": "292x292",
+      "output_canvas": "512x512",
+      "output_content": "400x400",
+      "scale": 1.3699
+    },
+    {
+      "file": "布布/eat（吃鸡腿）.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "240x240",
+      "source_content": "185x207",
+      "output_canvas": "512x512",
+      "output_content": "357x400",
+      "scale": 1.9324
+    },
+    {
+      "file": "布布/happy（上下跳）.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "240x240",
+      "source_content": "229x238",
+      "output_canvas": "512x512",
+      "output_content": "385x400",
+      "scale": 1.6807
+    },
+    {
+      "file": "布布/happy（原地扭1）.gif",
+      "source_frames": 12,
+      "output_frames": 12,
+      "source_canvas": "240x240",
+      "source_content": "180x216",
+      "output_canvas": "512x512",
+      "output_content": "333x400",
+      "scale": 1.8519
+    },
+    {
+      "file": "布布/happy（原地扭2）.gif",
+      "source_frames": 16,
+      "output_frames": 16,
+      "source_canvas": "240x240",
+      "source_content": "186x232",
+      "output_canvas": "512x512",
+      "output_content": "321x400",
+      "scale": 1.7241
+    },
+    {
+      "file": "布布/happy（原地跳舞）.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "255x255",
+      "source_content": "162x222",
+      "output_canvas": "512x512",
+      "output_content": "292x400",
+      "scale": 1.8018
+    },
+    {
+      "file": "布布/hot.gif",
+      "source_frames": 17,
+      "output_frames": 17,
+      "source_canvas": "320x300",
+      "source_content": "269x268",
+      "output_canvas": "512x512",
+      "output_content": "401x400",
+      "scale": 1.4925
+    },
+    {
+      "file": "布布/idel.gif",
+      "source_frames": 34,
+      "output_frames": 34,
+      "source_canvas": "300x300",
+      "source_content": "273x267",
+      "output_canvas": "512x512",
+      "output_content": "409x400",
+      "scale": 1.4981
+    },
+    {
+      "file": "布布/look（从右边屏幕边缘探出头来：当宠物被拖到屏幕右边边缘时使用，拖到屏幕左边边缘时镜像使用）.gif",
+      "source_frames": 5,
+      "output_frames": 5,
+      "source_canvas": "360x360",
+      "source_content": "222x357",
+      "output_canvas": "512x512",
+      "output_content": "249x400",
+      "scale": 1.1204
+    },
+    {
+      "file": "布布/look（向左呆看）.gif",
+      "source_frames": 9,
+      "output_frames": 9,
+      "source_canvas": "240x240",
+      "source_content": "180x202",
+      "output_canvas": "512x512",
+      "output_content": "356x400",
+      "scale": 1.9802
+    },
+    {
+      "file": "布布/look（看向屏幕）.gif",
+      "source_frames": 8,
+      "output_frames": 8,
+      "source_canvas": "640x636",
+      "source_content": "621x500",
+      "output_canvas": "512x512",
+      "output_content": "472x380",
+      "scale": 0.7601
+    },
+    {
+      "file": "布布/low_battery.gif",
+      "source_frames": 46,
+      "output_frames": 46,
+      "source_canvas": "240x240",
+      "source_content": "222x237",
+      "output_canvas": "512x512",
+      "output_content": "375x400",
+      "scale": 1.6878
+    },
+    {
+      "file": "布布/message.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "640x640",
+      "source_content": "468x423",
+      "output_canvas": "512x512",
+      "output_content": "443x400",
+      "scale": 0.9456
+    },
+    {
+      "file": "布布/sad（哭着跑走）.gif",
+      "source_frames": 14,
+      "output_frames": 14,
+      "source_canvas": "240x240",
+      "source_content": "239x230",
+      "output_canvas": "512x512",
+      "output_content": "416x400",
+      "scale": 1.7391
+    },
+    {
+      "file": "布布/sad（大哭）.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "240x240",
+      "source_content": "213x237",
+      "output_canvas": "512x512",
+      "output_content": "359x400",
+      "scale": 1.6878
+    },
+    {
+      "file": "布布/sad（趴着掉小眼泪）.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "240x240",
+      "source_content": "220x144",
+      "output_canvas": "512x512",
+      "output_content": "472x309",
+      "scale": 2.1455
+    },
+    {
+      "file": "布布/sad（趴着流泪看手机）.gif",
+      "source_frames": 19,
+      "output_frames": 19,
+      "source_canvas": "240x240",
+      "source_content": "213x192",
+      "output_canvas": "512x512",
+      "output_content": "444x400",
+      "scale": 2.0833
+    },
+    {
+      "file": "布布/shared.gif",
+      "source_frames": 31,
+      "output_frames": 31,
+      "source_canvas": "240x240",
+      "source_content": "232x223",
+      "output_canvas": "512x512",
+      "output_content": "416x400",
+      "scale": 1.7937
+    },
+    {
+      "file": "布布/sit（呆坐着）.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "480x365",
+      "source_content": "280x349",
+      "output_canvas": "512x512",
+      "output_content": "321x400",
+      "scale": 1.1461
+    },
+    {
+      "file": "布布/sit（在椅子上旋转）.gif",
+      "source_frames": 5,
+      "output_frames": 5,
+      "source_canvas": "240x240",
+      "source_content": "164x216",
+      "output_canvas": "512x512",
+      "output_content": "304x400",
+      "scale": 1.8519
+    },
+    {
+      "file": "布布/sleep1.gif",
+      "source_frames": 17,
+      "output_frames": 17,
+      "source_canvas": "240x240",
+      "source_content": "238x191",
+      "output_canvas": "512x512",
+      "output_content": "472x379",
+      "scale": 1.9832
+    },
+    {
+      "file": "布布/sleep2.gif",
+      "source_frames": 6,
+      "output_frames": 6,
+      "source_canvas": "300x288",
+      "source_content": "258x236",
+      "output_canvas": "512x512",
+      "output_content": "437x400",
+      "scale": 1.6949
+    },
+    {
+      "file": "布布/sleep3.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "240x240",
+      "source_content": "209x202",
+      "output_canvas": "512x512",
+      "output_content": "414x400",
+      "scale": 1.9802
+    },
+    {
+      "file": "布布/wake（不想起床闹情绪）.gif",
+      "source_frames": 4,
+      "output_frames": 4,
+      "source_canvas": "240x240",
+      "source_content": "232x229",
+      "output_canvas": "512x512",
+      "output_content": "405x400",
+      "scale": 1.7467
+    },
+    {
+      "file": "布布/wake（早上闹钟闹醒）.gif",
+      "source_frames": 10,
+      "output_frames": 10,
+      "source_canvas": "640x640",
+      "source_content": "602x582",
+      "output_canvas": "512x512",
+      "output_content": "414x400",
+      "scale": 0.6873
+    },
+    {
+      "file": "布布/wake（艰难起床）.gif",
+      "source_frames": 20,
+      "output_frames": 20,
+      "source_canvas": "85x85",
+      "source_content": "84x81",
+      "output_canvas": "512x512",
+      "output_content": "415x400",
+      "scale": 4.9383
+    },
+    {
+      "file": "布布/wake（醒了趴着）.gif",
+      "source_frames": 36,
+      "output_frames": 36,
+      "source_canvas": "240x240",
+      "source_content": "225x230",
+      "output_canvas": "512x512",
+      "output_content": "391x400",
+      "scale": 1.7391
+    },
+    {
+      "file": "布布/walk（向左走）.gif",
+      "source_frames": 43,
+      "output_frames": 43,
+      "source_canvas": "240x240",
+      "source_content": "128x164",
+      "output_canvas": "512x512",
+      "output_content": "312x400",
+      "scale": 2.439
+    },
+    {
+      "file": "布布/walk（向左跑）.gif",
+      "source_frames": 12,
+      "output_frames": 12,
+      "source_canvas": "240x240",
+      "source_content": "189x226",
+      "output_canvas": "512x512",
+      "output_content": "335x400",
+      "scale": 1.7699
+    },
+    {
+      "file": "布布/watching（向右定睛观看）.gif",
+      "source_frames": 67,
+      "output_frames": 67,
+      "source_canvas": "512x512",
+      "source_content": "508x505",
+      "output_canvas": "512x512",
+      "output_content": "402x400",
+      "scale": 0.7921
+    },
+    {
+      "file": "布布/watching（寻找目标）.gif",
+      "source_frames": 10,
+      "output_frames": 10,
+      "source_canvas": "240x240",
+      "source_content": "240x209",
+      "output_canvas": "512x512",
+      "output_content": "459x400",
+      "scale": 1.9139
+    },
+    {
+      "file": "布布/work（敲键盘）.gif",
+      "source_frames": 99,
+      "output_frames": 94,
+      "source_canvas": "512x512",
+      "source_content": "512x492",
+      "output_canvas": "512x512",
+      "output_content": "416x400",
+      "scale": 0.813
+    },
+    {
+      "file": "布布/work（看书）.gif",
+      "source_frames": 20,
+      "output_frames": 20,
+      "source_canvas": "240x240",
+      "source_content": "236x206",
+      "output_canvas": "512x512",
+      "output_content": "458x400",
+      "scale": 1.9417
+    },
+    {
+      "file": "布布/work（看电脑）.gif",
+      "source_frames": 2,
+      "output_frames": 2,
+      "source_canvas": "240x240",
+      "source_content": "217x204",
+      "output_canvas": "512x512",
+      "output_content": "425x400",
+      "scale": 1.9608
+    }
+  ]
+}

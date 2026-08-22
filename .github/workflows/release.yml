@@ -1,0 +1,77 @@
+name: 发布 Mac 与 Windows 更新
+
+on:
+  push:
+    tags:
+      - "app-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_CONFIG: '{"bundle":{"createUpdaterArtifacts":true}}'
+          YIER_BUBU_APP_UPDATE_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+          YIER_BUBU_APP_UPDATE_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+          YIER_BUBU_ASSET_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/asset-manifest.json
+          YIER_BUBU_ASSET_PUBLIC_KEY: ${{ vars.ASSET_UPDATE_PUBLIC_KEY }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "一二布布私人桌宠 ${{ github.ref_name }}"
+          releaseBody: "Mac 与 Windows 联网更新包。"
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }}
+
+  publish-assets:
+    needs: build-app
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      YIER_BUBU_ASSET_PRIVATE_KEY: ${{ secrets.ASSET_UPDATE_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 生成并签名素材包
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+          python3 scripts/make-asset-pack.py --version "$VERSION" --base-url "$BASE_URL" --output release-assets
+          node scripts/sign-asset-manifest.mjs release-assets/asset-manifest.unsigned.json release-assets/asset-manifest.json
+          test "$(tr -d '\r\n' < release-assets/asset-manifest.json.public-key.txt)" = "${{ vars.ASSET_UPDATE_PUBLIC_KEY }}"
+      - name: 上传素材并公开发布
+        shell: bash
+        run: |
+          gh release upload "$GITHUB_REF_NAME" release-assets/character-assets-*.zip release-assets/asset-manifest.json --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false
