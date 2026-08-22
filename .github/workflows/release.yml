@@ -50,8 +50,42 @@ jobs:
           releaseBody: "Mac 与 Windows 联网更新包。"
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: true
+          includeUpdaterJson: false
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: 上传 Mac 签名更新包
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          ARCHIVES=(src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz)
+          SIGNATURES=(src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig)
+          test -f "${ARCHIVES[0]}"
+          test -f "${SIGNATURES[0]}"
+          cp "${ARCHIVES[0]}" "yier-bubu_${VERSION}_aarch64.app.tar.gz"
+          cp "${SIGNATURES[0]}" "yier-bubu_${VERSION}_aarch64.app.tar.gz.sig"
+          gh release upload "$GITHUB_REF_NAME" \
+            "yier-bubu_${VERSION}_aarch64.app.tar.gz" \
+            "yier-bubu_${VERSION}_aarch64.app.tar.gz.sig" --clobber
+
+      - name: 上传 Windows 签名更新包
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          ARCHIVES=(src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.nsis.zip)
+          SIGNATURES=(src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.nsis.zip.sig)
+          test -f "${ARCHIVES[0]}"
+          test -f "${SIGNATURES[0]}"
+          cp "${ARCHIVES[0]}" "yier-bubu_${VERSION}_x64.nsis.zip"
+          cp "${SIGNATURES[0]}" "yier-bubu_${VERSION}_x64.nsis.zip.sig"
+          gh release upload "$GITHUB_REF_NAME" \
+            "yier-bubu_${VERSION}_x64.nsis.zip" \
+            "yier-bubu_${VERSION}_x64.nsis.zip.sig" --clobber
 
   publish-assets:
     needs: build-app
@@ -69,11 +103,20 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#app-v}"
           BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+          mkdir -p release-assets/updater-signatures
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "yier-bubu_*.sig" \
+            --dir release-assets/updater-signatures
+          node scripts/make-updater-json.mjs \
+            "$VERSION" release-assets/updater-signatures "$BASE_URL" release-assets/latest.json
           python3 scripts/make-asset-pack.py --version "$VERSION" --base-url "$BASE_URL" --output release-assets
           node scripts/sign-asset-manifest.mjs release-assets/asset-manifest.unsigned.json release-assets/asset-manifest.json
           test "$(tr -d '\r\n' < release-assets/asset-manifest.json.public-key.txt)" = "${{ vars.ASSET_UPDATE_PUBLIC_KEY }}"
       - name: 上传素材并公开发布
         shell: bash
         run: |
-          gh release upload "$GITHUB_REF_NAME" release-assets/character-assets-*.zip release-assets/asset-manifest.json --clobber
+          gh release upload "$GITHUB_REF_NAME" \
+            release-assets/character-assets-*.zip \
+            release-assets/asset-manifest.json \
+            release-assets/latest.json --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false
