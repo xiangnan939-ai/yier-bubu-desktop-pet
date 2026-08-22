@@ -10,7 +10,7 @@ if (!version || !signaturesDir || !baseUrl) {
 }
 
 const macArchive = `yier-bubu_${version}_aarch64.app.tar.gz`;
-const windowsArchive = `yier-bubu_${version}_x64.nsis.zip`;
+const windowsArchive = `yier-bubu_${version}_x64-setup.exe`;
 const readSignature = async (archive) => {
   const signature = (await readFile(join(signaturesDir, `${archive}.sig`), "utf8")).trim();
   if (!signature) throw new Error(`${archive}.sig 为空`);

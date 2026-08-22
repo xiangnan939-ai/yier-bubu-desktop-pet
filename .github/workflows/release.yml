@@ -76,15 +76,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#app-v}"
-          ARCHIVES=(src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.nsis.zip)
-          SIGNATURES=(src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.nsis.zip.sig)
+          ARCHIVES=(src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe)
+          SIGNATURES=(src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig)
           test -f "${ARCHIVES[0]}"
           test -f "${SIGNATURES[0]}"
-          cp "${ARCHIVES[0]}" "yier-bubu_${VERSION}_x64.nsis.zip"
-          cp "${SIGNATURES[0]}" "yier-bubu_${VERSION}_x64.nsis.zip.sig"
+          cp "${ARCHIVES[0]}" "yier-bubu_${VERSION}_x64-setup.exe"
+          cp "${SIGNATURES[0]}" "yier-bubu_${VERSION}_x64-setup.exe.sig"
           gh release upload "$GITHUB_REF_NAME" \
-            "yier-bubu_${VERSION}_x64.nsis.zip" \
-            "yier-bubu_${VERSION}_x64.nsis.zip.sig" --clobber
+            "yier-bubu_${VERSION}_x64-setup.exe" \
+            "yier-bubu_${VERSION}_x64-setup.exe.sig" --clobber
 
   publish-assets:
     needs: build-app
