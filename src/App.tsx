@@ -32,8 +32,39 @@ type AppProfile = {
   platform: string;
 };
 
-type PairingSettings = { partnerHost: string; sharedToken: string };
 type DeviceStatus = { batteryPercentage: number | null; charging: boolean; hot: boolean };
+type BindingStatus = {
+  state: "unbound" | "bound" | "revoking" | "revoked";
+  petName: string;
+  partnerName: string;
+  bindingId: string | null;
+  partnerHost: string | null;
+  partnerMachineCode: string | null;
+  createdAtMs: number | null;
+  incomingUnbind: boolean;
+  outgoingUnbind: boolean;
+  approvalPending: boolean;
+  requestedByName: string | null;
+};
+type PairingResult = { state: string; message: string };
+type ScreenAuth = {
+  messageType: string;
+  bindingId: string;
+  role: string;
+  publicKey: string;
+  nonce: string;
+  timestampMs: number;
+  signature: string;
+};
+type ScreenServerAuth = {
+  messageType: string;
+  bindingId: string;
+  clientNonce: string;
+  serverNonce: string;
+  timestampMs: number;
+  signature: string;
+};
+type ScreenConnectionInfo = { partnerHost: string; auth: ScreenAuth };
 type UpdateConfiguration = {
   currentVersion: string;
   appUpdateEnabled: boolean;
@@ -123,7 +154,9 @@ const MAX_PET_SIZE = 320;
 const MENU_WIDTH = 164;
 const MENU_HEIGHT = 94;
 const SETTINGS_WIDTH = 420;
-const SETTINGS_HEIGHT = 660;
+const SETTINGS_HEIGHT = 700;
+const BINDING_WIDTH = 420;
+const BINDING_HEIGHT = 350;
 
 const fallbackProfile: AppProfile = /Mac/i.test(navigator.userAgent)
   ? { role: "yier", petName: "一二", partnerName: "布布", remoteMenuLabel: "看看TA在干嘛", platform: "macos" }
@@ -138,16 +171,26 @@ function loadPetSize() {
   return Number.isFinite(stored) && stored > 0 ? clampPetSize(stored) : DEFAULT_PET_SIZE;
 }
 
-function loadPairing(): PairingSettings {
-  try {
-    return JSON.parse(localStorage.getItem("pairing") ?? "null") ?? { partnerHost: "", sharedToken: "" };
-  } catch {
-    return { partnerHost: "", sharedToken: "" };
-  }
-}
-
 function wait(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function openBindingWindow() {
+  try {
+    const existing = await WebviewWindow.getByLabel("binding");
+    if (existing) {
+      await existing.show();
+      await existing.setFocus();
+      return;
+    }
+    new WebviewWindow("binding", {
+      url: "/?mode=binding", title: "绑定一二与布布",
+      width: BINDING_WIDTH, height: BINDING_HEIGHT, center: true,
+      decorations: true, transparent: false, resizable: false,
+    });
+  } catch {
+    window.open("/?mode=binding", "_blank");
+  }
 }
 
 async function waitUnlessCancelled(milliseconds: number, cancelled: () => boolean) {
@@ -190,45 +233,70 @@ async function positionBesidePet(width: number, height: number, gap = 12) {
 }
 
 function Viewer() {
-  const settings = loadPairing();
   const [status, setStatus] = useState("正在连接对方电脑…");
   const [frame, setFrame] = useState("");
   const lastUrl = useRef("");
 
   useEffect(() => {
-    if (!settings.partnerHost || !settings.sharedToken) {
-      setStatus("请先在设置中填写对方的 Tailscale 主机名和配对密钥");
-      return;
-    }
-    const socket = new WebSocket(
-      `ws://${settings.partnerHost}:39821/screen?token=${encodeURIComponent(settings.sharedToken)}`,
-    );
-    socket.binaryType = "blob";
-    socket.onopen = () => {
-      setStatus("已连接 · 只读实时画面");
-      emitTo("main", "viewer-status", "connected").catch(() => undefined);
-    };
-    socket.onerror = () => {
-      setStatus("连接失败，请确认对方在线且 Tailscale 已连接");
+    let socket: WebSocket | null = null;
+    let stopped = false;
+    let authenticated = false;
+    invoke<ScreenConnectionInfo>("screen_connection_info").then((connection) => {
+      if (stopped) return;
+      socket = new WebSocket(`ws://${connection.partnerHost}:39821/screen`);
+      socket.binaryType = "blob";
+      socket.onopen = () => {
+        setStatus("正在验证双方设备身份…");
+        socket?.send(JSON.stringify(connection.auth));
+      };
+      socket.onerror = () => {
+        setStatus("连接失败，请确认对方在线且 Tailscale 已连接");
+        emitTo("main", "viewer-status", "failed").catch(() => undefined);
+      };
+      socket.onclose = () => {
+        if (!stopped) setStatus(authenticated ? "连接已断开" : "设备认证未完成");
+      };
+      socket.onmessage = async (event) => {
+        if (typeof event.data === "string") {
+          let serverAuth: ScreenServerAuth;
+          try {
+            serverAuth = JSON.parse(event.data) as ScreenServerAuth;
+          } catch {
+            setStatus(event.data);
+            socket?.close();
+            emitTo("main", "viewer-status", "failed").catch(() => undefined);
+            return;
+          }
+          try {
+            if (serverAuth.messageType !== "screenAuthOk") throw new Error("对方设备认证响应无效");
+            const valid = await invoke<boolean>("verify_screen_server_auth", { auth: serverAuth });
+            if (!valid) throw new Error("对方设备签名无效");
+            authenticated = true;
+            setStatus("已连接 · 双向设备认证 · 只读实时画面");
+            emitTo("main", "viewer-status", "connected").catch(() => undefined);
+          } catch (reason) {
+            setStatus(String(reason instanceof Error ? reason.message : reason));
+            socket?.close();
+            emitTo("main", "viewer-status", "failed").catch(() => undefined);
+          }
+          return;
+        }
+        if (!authenticated || !(event.data instanceof Blob)) return;
+        const url = URL.createObjectURL(event.data);
+        if (lastUrl.current) URL.revokeObjectURL(lastUrl.current);
+        lastUrl.current = url;
+        setFrame(url);
+      };
+    }).catch((reason) => {
+      setStatus(String(reason));
       emitTo("main", "viewer-status", "failed").catch(() => undefined);
-    };
-    socket.onclose = () => setStatus("连接已断开");
-    socket.onmessage = (event) => {
-      if (typeof event.data === "string") {
-        setStatus(event.data);
-        return;
-      }
-      if (!(event.data instanceof Blob)) return;
-      const url = URL.createObjectURL(event.data);
-      if (lastUrl.current) URL.revokeObjectURL(lastUrl.current);
-      lastUrl.current = url;
-      setFrame(url);
-    };
+    });
     return () => {
-      socket.close();
+      stopped = true;
+      socket?.close();
       if (lastUrl.current) URL.revokeObjectURL(lastUrl.current);
     };
-  }, [settings.partnerHost, settings.sharedToken]);
+  }, []);
 
   return (
     <main className="viewer-shell">
@@ -243,10 +311,76 @@ function Viewer() {
   );
 }
 
+function BindingSetup() {
+  const [profile, setProfile] = useState(fallbackProfile);
+  const [status, setStatus] = useState<BindingStatus | null>(null);
+  const [passphrase, setPassphrase] = useState("");
+  const [message, setMessage] = useState("两台电脑输入完全相同的口令后，会自动找到彼此并完成绑定。");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(() => invoke<BindingStatus>("binding_status").then(setStatus), []);
+  useEffect(() => {
+    invoke<AppProfile>("app_profile").then(setProfile).catch(() => undefined);
+    refresh().catch((reason) => setMessage(String(reason)));
+    const unlisten = listen("binding-changed", () => refresh().catch(() => undefined));
+    return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
+  }, [refresh]);
+
+  const pair = async () => {
+    if (busy) return;
+    if (passphrase.trim().length < 8) {
+      setMessage("绑定口令至少需要 8 个字符；建议使用 12 个以上字符。");
+      return;
+    }
+    setBusy(true);
+    setMessage(profile.role === "bubu" ? "正在等待一二输入相同口令…" : "正在寻找等待绑定的布布电脑…");
+    try {
+      const result = await invoke<PairingResult>("pair_device", { passphrase });
+      setPassphrase("");
+      setMessage(result.message);
+      await refresh();
+      await emitTo("main", "binding-changed").catch(() => undefined);
+      window.setTimeout(() => getCurrentWindow().close(), 900);
+    } catch (reason) {
+      setMessage(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const alreadyBound = status?.state === "bound" || status?.state === "revoking";
+  return (
+    <main className="binding-shell">
+      <div className="binding-mark">{profile.petName}</div>
+      <h1>{alreadyBound ? `${profile.petName}已经绑定` : `输入口令绑定我的${profile.petName}`}</h1>
+      {alreadyBound ? (
+        <>
+          <p>当前绑定对象：{status?.partnerName}。绑定后只能由双方签名同意才能解除。</p>
+          <button className="primary wide" onClick={() => getCurrentWindow().close()}>知道了</button>
+        </>
+      ) : (
+        <>
+          <p>请在 Mac 和 Windows 上输入同一串字符。口令只参与这一次绑定，不会保存。</p>
+          <input autoFocus type="password" value={passphrase} disabled={busy}
+            onChange={(event) => setPassphrase(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") pair(); }}
+            placeholder="输入双方约定的绑定口令" />
+          <button className="primary wide" disabled={busy} onClick={pair}>
+            {busy ? "正在安全绑定…" : `绑定我的${profile.petName}`}
+          </button>
+          <p className="binding-message">{message}</p>
+        </>
+      )}
+    </main>
+  );
+}
+
 function Settings() {
-  const [pairing, setPairing] = useState(loadPairing);
   const [petSize, setPetSize] = useState(loadPetSize);
   const [error, setError] = useState("");
+  const [binding, setBinding] = useState<BindingStatus | null>(null);
+  const [bindingMessage, setBindingMessage] = useState("正在读取绑定状态…");
+  const [bindingBusy, setBindingBusy] = useState(false);
   const [profile, setProfile] = useState(fallbackProfile);
   const [updateConfig, setUpdateConfig] = useState<UpdateConfiguration | null>(null);
   const [assetVersion, setAssetVersion] = useState<string | null>(null);
@@ -268,6 +402,20 @@ function Settings() {
         setUpdateMessage("启动后每 6 小时自动检查，也可以立即检查。");
       }
     }).catch((reason) => setUpdateMessage(String(reason)));
+    invoke<BindingStatus>("binding_status").then((value) => {
+      setBinding(value);
+      setBindingMessage(value.state === "bound" ? `已与${value.partnerName}安全绑定` : "尚未完成双机绑定");
+    }).catch((reason) => setBindingMessage(String(reason)));
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => invoke<BindingStatus>("binding_status").then(setBinding).catch(() => undefined);
+    const unlisten = listen("binding-changed", refresh);
+    const timer = window.setInterval(refresh, 2_000);
+    return () => {
+      window.clearInterval(timer);
+      unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
   }, []);
 
   const checkUpdates = async () => {
@@ -312,19 +460,39 @@ function Settings() {
   };
 
   const save = async () => {
-    const hasPartialPairing = Boolean(pairing.partnerHost || pairing.sharedToken);
-    if (hasPartialPairing && (!pairing.partnerHost || pairing.sharedToken.length < 16)) {
-      setError("连接信息需要同时填写；配对密钥至少 16 个字符");
-      return;
-    }
-
     const size = clampPetSize(petSize);
-    localStorage.setItem("pairing", JSON.stringify(pairing));
     localStorage.setItem("petSize", String(size));
-    await invoke("set_shared_token", { token: pairing.sharedToken }).catch(() => undefined);
     await resizeMainPet(size).catch(() => undefined);
     await emitTo("main", "settings-updated", { petSize: size }).catch(() => undefined);
     await getCurrentWindow().close();
+  };
+
+  const sendUnbindRequest = async () => {
+    if (bindingBusy) return;
+    setBindingBusy(true);
+    setError("");
+    try {
+      setBindingMessage(await invoke<string>("request_unbind"));
+      setBinding(await invoke<BindingStatus>("binding_status"));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBindingBusy(false);
+    }
+  };
+
+  const answerUnbind = async (approve: boolean) => {
+    if (bindingBusy) return;
+    setBindingBusy(true);
+    setError("");
+    try {
+      setBindingMessage(await invoke<string>("respond_unbind", { approve }));
+      setBinding(await invoke<BindingStatus>("binding_status"));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBindingBusy(false);
+    }
   };
 
   return (
@@ -358,13 +526,29 @@ function Settings() {
 
       <section className="settings-section">
         <h2>双机连接</h2>
-        <p>使用对方的 Tailscale 主机名或 100.x 地址，两端填写相同密钥。暂时不用时可以全部留空。</p>
-        <label>对方主机<input value={pairing.partnerHost}
-          onChange={(event) => setPairing({ ...pairing, partnerHost: event.target.value.trim() })}
-          placeholder="例如 bubu-win 或 100.64.0.2" /></label>
-        <label>配对密钥<input type="password" value={pairing.sharedToken}
-          onChange={(event) => setPairing({ ...pairing, sharedToken: event.target.value })}
-          placeholder="两端保持一致，至少 16 个字符" /></label>
+        <div className={`binding-state state-${binding?.state ?? "loading"}`}>
+          <strong>{binding?.state === "bound" ? `已绑定${binding.partnerName}`
+            : binding?.state === "revoking" ? "正在完成双方解绑"
+              : binding?.state === "revoked" ? "双方已解绑" : "尚未绑定"}</strong>
+          {binding?.partnerMachineCode && <span>对方机器校验码：{binding.partnerMachineCode}</span>}
+          {binding?.createdAtMs && <span>绑定时间：{new Date(binding.createdAtMs).toLocaleString()}</span>}
+        </div>
+        <p>{bindingMessage}</p>
+        {binding?.incomingUnbind && !binding.approvalPending && <div className="unbind-request">
+          <strong>{binding.requestedByName}请求解除绑定</strong>
+          <p>只有你明确同意后才会解绑；拒绝会继续保留当前绑定。</p>
+          <div className="update-actions">
+            <button disabled={bindingBusy} onClick={() => answerUnbind(false)}>拒绝解绑</button>
+            <button className="danger" disabled={bindingBusy} onClick={() => answerUnbind(true)}>同意解绑</button>
+          </div>
+        </div>}
+        {binding?.approvalPending && <button disabled={bindingBusy}
+          onClick={() => answerUnbind(true)}>重试完成双方解绑</button>}
+        {binding?.state === "bound" && !binding.incomingUnbind && !binding.outgoingUnbind
+          && <button className="unbind-button" disabled={bindingBusy} onClick={sendUnbindRequest}>请求双方解绑</button>}
+        {binding?.outgoingUnbind && <p className="pending-note">已发送请求，正在等待对方决定。你不能单方面解除绑定。</p>}
+        {(binding?.state === "unbound" || binding?.state === "revoked")
+          && <button className="primary-inline" onClick={openBindingWindow}>打开首次绑定</button>}
       </section>
 
       {error && <p className="settings-error">{error}</p>}
@@ -547,7 +731,10 @@ function Pet() {
 
   useEffect(() => {
     invoke<AppProfile>("app_profile").then(setProfile).catch(() => undefined);
-    invoke("set_shared_token", { token: loadPairing().sharedToken }).catch(() => undefined);
+    localStorage.removeItem("pairing");
+    invoke<BindingStatus>("binding_status").then((status) => {
+      if (status.state === "unbound" || status.state === "revoked") openBindingWindow();
+    }).catch(() => undefined);
     const size = loadPetSize();
     setPetSize(size);
     getCurrentWindow().setSize(new LogicalSize(size, size)).catch(() => undefined);
@@ -763,9 +950,9 @@ function Pet() {
 
   const openViewer = useCallback(async () => {
     runInteraction("watching");
-    const pairing = loadPairing();
-    if (!pairing.partnerHost || !pairing.sharedToken) {
-      await openSettings();
+    const binding = await invoke<BindingStatus>("binding_status").catch(() => null);
+    if (!binding || binding.state !== "bound") {
+      await openBindingWindow();
       return;
     }
     try {
@@ -778,7 +965,12 @@ function Pet() {
     } catch {
       window.open("/?mode=viewer", "_blank");
     }
-  }, [openSettings, runInteraction]);
+  }, [runInteraction]);
+
+  useEffect(() => {
+    const unlisten = listen("unbind-request-received", () => openSettings());
+    return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
+  }, [openSettings]);
 
   useEffect(() => {
     const unlisten = listen<"viewer" | "settings">("pet-menu-action", (event) => {
@@ -875,6 +1067,7 @@ function Pet() {
 export default function App() {
   const mode = new URLSearchParams(window.location.search).get("mode");
   if (mode === "viewer") return <Viewer />;
+  if (mode === "binding") return <BindingSetup />;
   if (mode === "settings") return <Settings />;
   if (mode === "menu") return <PetMenu />;
   return <Pet />;

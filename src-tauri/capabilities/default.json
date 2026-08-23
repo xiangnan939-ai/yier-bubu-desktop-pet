@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "桌宠主窗口与只读桌面查看窗口所需能力",
-  "windows": ["main", "viewer", "settings", "pet-menu"],
+  "windows": ["main", "viewer", "settings", "pet-menu", "binding"],
   "permissions": [
     "core:default",
     "core:window:allow-create",

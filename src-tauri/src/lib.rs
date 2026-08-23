@@ -1,8 +1,9 @@
 use std::{
     io::Cursor,
+    net::SocketAddr,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     time::Duration,
 };
@@ -10,21 +11,27 @@ use std::{
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        ConnectInfo, State,
     },
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
 use image::codecs::jpeg::JpegEncoder;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::Manager;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
-use tokio::sync::RwLock;
 use xcap::Monitor;
 
+mod binding;
 mod updates;
+
+use binding::{
+    BindingManager, BindingStatus, PairFinishRequest, PairFinishResponse, PairStartRequest,
+    PairStartResponse, PairingResult, ScreenConnectionInfo, ScreenServerAuth, SignedUnbindRequest,
+    UnbindAck, UnbindApproval,
+};
 
 const SCREEN_PORT: u16 = 39_821;
 const FRAME_INTERVAL: Duration = Duration::from_millis(180);
@@ -32,8 +39,8 @@ const MAX_STREAM_WIDTH: u32 = 1_600;
 
 #[derive(Clone, Default)]
 struct ScreenServerState {
-    shared_token: Arc<RwLock<String>>,
     active_viewers: Arc<AtomicUsize>,
+    binding: Arc<RwLock<Option<BindingManager>>>,
 }
 
 struct ViewerGuard(Arc<AtomicUsize>);
@@ -52,11 +59,6 @@ struct AppProfile {
     partner_name: &'static str,
     remote_menu_label: &'static str,
     platform: &'static str,
-}
-
-#[derive(Deserialize)]
-struct ScreenQuery {
-    token: String,
 }
 
 #[tauri::command]
@@ -90,17 +92,51 @@ fn app_profile() -> AppProfile {
 }
 
 #[tauri::command]
-async fn set_shared_token(
-    token: String,
-    state: tauri::State<'_, ScreenServerState>,
-) -> Result<(), String> {
-    *state.shared_token.write().await = token;
-    Ok(())
+fn screen_share_active(state: tauri::State<'_, ScreenServerState>) -> bool {
+    state.active_viewers.load(Ordering::Relaxed) > 0
 }
 
 #[tauri::command]
-fn screen_share_active(state: tauri::State<'_, ScreenServerState>) -> bool {
-    state.active_viewers.load(Ordering::Relaxed) > 0
+async fn binding_status(
+    manager: tauri::State<'_, BindingManager>,
+) -> Result<BindingStatus, String> {
+    Ok(manager.status().await)
+}
+
+#[tauri::command]
+async fn pair_device(
+    passphrase: String,
+    manager: tauri::State<'_, BindingManager>,
+) -> Result<PairingResult, String> {
+    manager.pair(passphrase).await
+}
+
+#[tauri::command]
+async fn screen_connection_info(
+    manager: tauri::State<'_, BindingManager>,
+) -> Result<ScreenConnectionInfo, String> {
+    manager.screen_connection_info().await
+}
+
+#[tauri::command]
+async fn verify_screen_server_auth(
+    auth: ScreenServerAuth,
+    manager: tauri::State<'_, BindingManager>,
+) -> Result<bool, String> {
+    manager.verify_screen_server_auth(auth).await
+}
+
+#[tauri::command]
+async fn request_unbind(manager: tauri::State<'_, BindingManager>) -> Result<String, String> {
+    manager.request_unbind().await
+}
+
+#[tauri::command]
+async fn respond_unbind(
+    approve: bool,
+    manager: tauri::State<'_, BindingManager>,
+) -> Result<String, String> {
+    manager.respond_unbind(approve).await
 }
 
 #[cfg(target_os = "macos")]
@@ -329,19 +365,56 @@ fn device_status() -> DeviceStatus {
 
 async fn screen_route(
     State(state): State<ScreenServerState>,
-    Query(query): Query<ScreenQuery>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let expected = state.shared_token.read().await.clone();
-    if expected.len() < 16 || query.token.as_bytes() != expected.as_bytes() {
-        return (StatusCode::UNAUTHORIZED, "配对密钥无效").into_response();
-    }
+    let manager = match screen_binding_manager(&state) {
+        Ok(manager) => manager,
+        Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, error).into_response(),
+    };
     upgrade
-        .on_upgrade(move |socket| stream_screen(socket, state))
+        .on_upgrade(move |socket| stream_screen(socket, state, manager, remote))
         .into_response()
 }
 
-async fn stream_screen(mut socket: WebSocket, state: ScreenServerState) {
+async fn stream_screen(
+    mut socket: WebSocket,
+    state: ScreenServerState,
+    manager: BindingManager,
+    remote: SocketAddr,
+) {
+    let auth_message = tokio::time::timeout(Duration::from_secs(8), socket.recv()).await;
+    let auth = match auth_message {
+        Ok(Some(Ok(Message::Text(value)))) => serde_json::from_str(value.as_str()),
+        _ => {
+            let _ = socket.send(Message::Text("设备认证超时".into())).await;
+            return;
+        }
+    };
+    let auth = match auth {
+        Ok(auth) => auth,
+        Err(_) => {
+            let _ = socket.send(Message::Text("设备认证数据无效".into())).await;
+            return;
+        }
+    };
+    let server_auth = match manager.authorize_screen_client(remote.ip(), &auth).await {
+        Ok(auth) => auth,
+        Err(error) => {
+            let _ = socket.send(Message::Text(error.into())).await;
+            return;
+        }
+    };
+    let Ok(server_auth) = serde_json::to_string(&server_auth) else {
+        return;
+    };
+    if socket
+        .send(Message::Text(server_auth.into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
     state.active_viewers.fetch_add(1, Ordering::Relaxed);
     let _viewer_guard = ViewerGuard(state.active_viewers);
     loop {
@@ -358,6 +431,80 @@ async fn stream_screen(mut socket: WebSocket, state: ScreenServerState) {
         }
         tokio::time::sleep(FRAME_INTERVAL).await;
     }
+}
+
+async fn pair_start_route(
+    State(state): State<ScreenServerState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(request): Json<PairStartRequest>,
+) -> Result<Json<PairStartResponse>, (StatusCode, String)> {
+    screen_binding_manager(&state)
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))?
+        .receive_pair_start(remote.ip(), request)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::UNAUTHORIZED, error))
+}
+
+async fn pair_finish_route(
+    State(state): State<ScreenServerState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(request): Json<PairFinishRequest>,
+) -> Result<Json<PairFinishResponse>, (StatusCode, String)> {
+    screen_binding_manager(&state)
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))?
+        .receive_pair_finish(remote.ip(), request)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::UNAUTHORIZED, error))
+}
+
+async fn unbind_request_route(
+    State(state): State<ScreenServerState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(request): Json<SignedUnbindRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    screen_binding_manager(&state)
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))?
+        .receive_unbind_request(remote.ip(), request)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|error| (StatusCode::UNAUTHORIZED, error))
+}
+
+async fn unbind_approve_route(
+    State(state): State<ScreenServerState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(approval): Json<UnbindApproval>,
+) -> Result<Json<UnbindAck>, (StatusCode, String)> {
+    screen_binding_manager(&state)
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))?
+        .receive_unbind_approval(remote.ip(), approval)
+        .await
+        .map(Json)
+        .map_err(|error| (StatusCode::UNAUTHORIZED, error))
+}
+
+async fn unbind_reject_route(
+    State(state): State<ScreenServerState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(rejection): Json<UnbindAck>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    screen_binding_manager(&state)
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))?
+        .receive_unbind_rejection(remote.ip(), rejection)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|error| (StatusCode::UNAUTHORIZED, error))
+}
+
+fn screen_binding_manager(state: &ScreenServerState) -> Result<BindingManager, String> {
+    state
+        .binding
+        .read()
+        .map_err(|_| "绑定服务状态不可用".to_string())?
+        .clone()
+        .ok_or_else(|| "绑定服务尚未初始化".to_string())
 }
 
 fn capture_primary_monitor() -> Result<Vec<u8>, String> {
@@ -389,15 +536,45 @@ fn capture_primary_monitor() -> Result<Vec<u8>, String> {
 async fn run_screen_server(state: ScreenServerState) {
     let app = Router::new()
         .route("/screen", get(screen_route))
-        .with_state(state);
-    let address = format!("0.0.0.0:{SCREEN_PORT}");
-    match tokio::net::TcpListener::bind(&address).await {
-        Ok(listener) => {
-            if let Err(error) = axum::serve(listener, app).await {
-                eprintln!("屏幕服务退出：{error}");
+        .route("/pair/start", post(pair_start_route))
+        .route("/pair/finish", post(pair_finish_route))
+        .route("/unbind/request", post(unbind_request_route))
+        .route("/unbind/approve", post(unbind_approve_route))
+        .route("/unbind/reject", post(unbind_reject_route))
+        .with_state(state.clone());
+    loop {
+        let manager = match screen_binding_manager(&state) {
+            Ok(manager) => manager,
+            Err(error) => {
+                eprintln!("绑定服务尚未就绪：{error}");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
             }
+        };
+        let ip = match manager.local_tailscale_ip().await {
+            Ok(ip) => ip,
+            Err(error) => {
+                eprintln!("等待 Tailscale 网络：{error}");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+        let address = format!("{ip}:{SCREEN_PORT}");
+        match tokio::net::TcpListener::bind(&address).await {
+            Ok(listener) => {
+                if let Err(error) = axum::serve(
+                    listener,
+                    app.clone()
+                        .into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                {
+                    eprintln!("屏幕服务退出：{error}");
+                }
+            }
+            Err(error) => eprintln!("无法监听屏幕服务 {address}：{error}"),
         }
-        Err(error) => eprintln!("无法监听屏幕服务 {address}：{error}"),
+        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
 
@@ -431,16 +608,30 @@ pub fn run() {
                     autostart.enable()?;
                 }
             }
+            let binding_manager =
+                BindingManager::new(app.handle().clone(), app.path().app_data_dir()?)
+                    .map_err(std::io::Error::other)?;
+            *server_state
+                .binding
+                .write()
+                .map_err(|_| std::io::Error::other("无法初始化绑定服务"))? =
+                Some(binding_manager.clone());
+            app.manage(binding_manager);
             tauri::async_runtime::spawn(run_screen_server(server_state));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_profile,
+            binding_status,
+            pair_device,
+            screen_connection_info,
+            verify_screen_server_auth,
+            request_unbind,
+            respond_unbind,
             screen_share_active,
             system_audio_playing,
             system_idle_seconds,
             device_status,
-            set_shared_token,
             updates::update_configuration,
             updates::check_app_update,
             updates::install_app_update,
