@@ -47,7 +47,6 @@ jobs:
           mkdir "${RUNNER_TEMP}/runtime-config"
           mv realtime.json "${RUNNER_TEMP}/runtime-config/realtime.json"
           git switch --orphan runtime-config-publish
-          git rm -rf .
           cp "${RUNNER_TEMP}/runtime-config/realtime.json" realtime.json
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
