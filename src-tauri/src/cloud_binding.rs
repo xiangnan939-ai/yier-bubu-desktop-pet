@@ -1130,7 +1130,11 @@ async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
                                 if let Some(endpoint) =
                                     validate_runtime_endpoint(&config.endpoint, expected_host)
                                 {
-                                    endpoints.push(endpoint);
+                                    if let Some(api_base) =
+                                        establish_runtime_session(client, &endpoint).await
+                                    {
+                                        endpoints.push(api_base);
+                                    }
                                 }
                             }
                         }
@@ -1145,6 +1149,20 @@ async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
         }
     }
     endpoints
+}
+
+async fn establish_runtime_session(client: &reqwest::Client, endpoint: &str) -> Option<String> {
+    let response = client.get(endpoint).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    runtime_api_base(endpoint)
+}
+
+fn runtime_api_base(endpoint: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(endpoint).ok()?;
+    url.set_query(None);
+    Some(url.as_str().trim_end_matches('/').to_string())
 }
 
 fn decode_runtime_config(bytes: &[u8]) -> Result<RuntimeEndpointConfig, String> {
@@ -1604,6 +1622,15 @@ mod tests {
             "private.example.edgeone.dev"
         )
         .is_none());
+    }
+
+    #[test]
+    fn runtime_api_base_removes_one_time_access_parameters() {
+        assert_eq!(
+            runtime_api_base("https://private.example.edgeone.dev?eo_token=secret&eo_time=123")
+                .as_deref(),
+            Some("https://private.example.edgeone.dev")
+        );
     }
 
     #[test]

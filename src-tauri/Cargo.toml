@@ -1,6 +1,6 @@
 [package]
 name = "yier-bubu-desktop-pet"
-version = "0.5.0"
+version = "0.5.1"
 description = "一二与布布的双人私人桌宠"
 authors = ["一二与布布"]
 edition = "2021"
