@@ -1,4 +1,5 @@
-import { createPublicKey, verify as verifySignature } from "node:crypto";
+import { createHmac, createPublicKey, verify as verifySignature } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import { getStore } from "@edgeone/pages-blob";
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -22,6 +23,32 @@ export function json(value, status = 200) {
 
 export function failure(message, status = 400) {
   return json({ error: message }, status);
+}
+
+export function generateUserSig(sdkAppId, sdkSecret, userId, expireSeconds) {
+  const issuedAt = Math.floor(Date.now() / 1_000);
+  const payload = {
+    "TLS.ver": "2.0",
+    "TLS.identifier": String(userId),
+    "TLS.sdkappid": Number(sdkAppId),
+    "TLS.time": issuedAt,
+    "TLS.expire": Number(expireSeconds),
+  };
+  const content = [
+    `TLS.identifier:${payload["TLS.identifier"]}`,
+    `TLS.sdkappid:${payload["TLS.sdkappid"]}`,
+    `TLS.time:${payload["TLS.time"]}`,
+    `TLS.expire:${payload["TLS.expire"]}`,
+    "",
+  ].join("\n");
+  payload["TLS.sig"] = createHmac("sha256", sdkSecret)
+    .update(content)
+    .digest("base64");
+  return deflateSync(Buffer.from(JSON.stringify(payload)))
+    .toString("base64")
+    .replace(/\+/g, "*")
+    .replace(/\//g, "-")
+    .replace(/=/g, "_");
 }
 
 export async function readBody(request, maxBytes = 96_000) {

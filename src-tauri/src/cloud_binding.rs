@@ -28,6 +28,8 @@ const SIGNAL_LIFETIME: Duration = Duration::from_secs(120);
 const SPAKE_MAC_ID: &[u8] = b"yier-bubu/mac/cloud-v2";
 const SPAKE_WINDOWS_ID: &[u8] = b"yier-bubu/windows/cloud-v2";
 const ENDPOINTS: Option<&str> = option_env!("YIER_BUBU_REALTIME_ENDPOINTS");
+const RUNTIME_CONFIG_URL: Option<&str> = option_env!("YIER_BUBU_REALTIME_CONFIG_URL");
+const RUNTIME_PROJECT_HOST: Option<&str> = option_env!("YIER_BUBU_REALTIME_PROJECT_HOST");
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -186,6 +188,13 @@ struct PairExchangeRequest<'a, T> {
     owner_authorization: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeEndpointConfig {
+    endpoint: String,
+    expires_at_ms: u64,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PairExchangeResponse<T> {
@@ -318,7 +327,7 @@ impl BindingManager {
                 (request.core.expires_at_ms >= now_ms())
                     .then(|| pet_name_for_role(&request.core.requested_by).to_string())
             }),
-            realtime_configured: !configured_endpoints().is_empty(),
+            realtime_configured: realtime_service_available(),
             local_public_key: self.public_key(),
         }
     }
@@ -328,7 +337,7 @@ impl BindingManager {
         if passphrase.chars().count() < 12 {
             return Err("联网绑定口令至少需要 12 个字符".into());
         }
-        if configured_endpoints().is_empty() {
+        if !realtime_service_available() {
             return Err("联网服务尚未写入这个安装包，请先安装正式发布版".into());
         }
         {
@@ -448,9 +457,13 @@ impl BindingManager {
     {
         let deadline = now_ms() + PAIRING_LIFETIME.as_millis() as u64;
         let client = short_http_client()?;
+        let endpoints = resolved_endpoints(&client).await;
+        if endpoints.is_empty() {
+            return Err("暂时无法读取联网服务入口，请检查网络后重试".into());
+        }
         let mut last_error = waiting.to_string();
         while now_ms() < deadline {
-            for endpoint in configured_endpoints() {
+            for endpoint in &endpoints {
                 let request = PairExchangeRequest {
                     channel,
                     phase,
@@ -460,12 +473,10 @@ impl BindingManager {
                     owner_authorization: (self.role() == "yier")
                         .then(|| self.sign_bytes(&pair_channel_authorization_bytes(channel))),
                 };
-                match client
-                    .post(format!("{endpoint}/api/pair"))
-                    .json(&request)
-                    .send()
-                    .await
-                {
+                let Ok(url) = endpoint_request_url(endpoint, "/api/pair") else {
+                    continue;
+                };
+                match client.post(url).json(&request).send().await {
                     Ok(response) if response.status().is_success() => {
                         let value: PairExchangeResponse<T> =
                             response.json().await.map_err(|error| error.to_string())?;
@@ -511,13 +522,15 @@ impl BindingManager {
         };
         let client = short_http_client()?;
         let mut errors = Vec::new();
-        for endpoint in configured_endpoints() {
-            match client
-                .post(format!("{endpoint}/api/credentials"))
-                .json(&request)
-                .send()
-                .await
-            {
+        for endpoint in resolved_endpoints(&client).await {
+            let url = match endpoint_request_url(&endpoint, "/api/credentials") {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
+            };
+            match client.post(url).json(&request).send().await {
                 Ok(response) if response.status().is_success() => {
                     let mut value: RealtimeCredentials =
                         response.json().await.map_err(|error| error.to_string())?;
@@ -925,9 +938,16 @@ impl BindingManager {
     ) -> Result<(), String> {
         let client = short_http_client()?;
         let mut errors = Vec::new();
-        for endpoint in configured_endpoints() {
+        for endpoint in resolved_endpoints(&client).await {
+            let url = match endpoint_request_url(&endpoint, "/api/revoke") {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
+            };
             match client
-                .post(format!("{endpoint}/api/revoke"))
+                .post(url)
                 .json(&json!({ "record": record, "approval": approval, "ack": ack }))
                 .send()
                 .await
@@ -1078,6 +1098,78 @@ fn configured_endpoints() -> Vec<String> {
         .collect()
 }
 
+fn realtime_service_available() -> bool {
+    RUNTIME_CONFIG_URL.is_some_and(|value| value.starts_with("https://"))
+        || !configured_endpoints().is_empty()
+}
+
+async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
+    let mut endpoints = Vec::new();
+    if let (Some(config_url), Some(expected_host)) = (RUNTIME_CONFIG_URL, RUNTIME_PROJECT_HOST) {
+        if let Ok(mut url) = reqwest::Url::parse(config_url) {
+            url.query_pairs_mut()
+                .append_pair("refresh", &(now_ms() / 60_000).to_string());
+            if let Ok(response) = client
+                .get(url)
+                .header(reqwest::header::CACHE_CONTROL, "no-cache")
+                .send()
+                .await
+            {
+                if response.status().is_success() {
+                    if let Ok(config) = response.json::<RuntimeEndpointConfig>().await {
+                        if config.expires_at_ms > now_ms() + 5 * 60_000 {
+                            if let Some(endpoint) =
+                                validate_runtime_endpoint(&config.endpoint, expected_host)
+                            {
+                                endpoints.push(endpoint);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for endpoint in configured_endpoints() {
+        if !endpoints.contains(&endpoint) {
+            endpoints.push(endpoint);
+        }
+    }
+    endpoints
+}
+
+fn validate_runtime_endpoint(value: &str, expected_host: &str) -> Option<String> {
+    let url = reqwest::Url::parse(value).ok()?;
+    if url.scheme() != "https"
+        || url.host_str() != Some(expected_host)
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || (url.path() != "/" && !url.path().is_empty())
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let mut seen_token = false;
+    let mut seen_time = false;
+    for (key, value) in url.query_pairs() {
+        if value.is_empty() {
+            return None;
+        }
+        match key.as_ref() {
+            "eo_token" if !seen_token => seen_token = true,
+            "eo_time" if !seen_time => seen_time = true,
+            _ => return None,
+        }
+    }
+    (seen_token && seen_time).then(|| value.trim_end_matches('/').to_string())
+}
+
+fn endpoint_request_url(endpoint: &str, path: &str) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(endpoint).map_err(|error| error.to_string())?;
+    url.set_path(path);
+    Ok(url)
+}
+
 fn pair_channel(passphrase: &str) -> String {
     short_hash(&format!("yier-bubu-pair-v2|{passphrase}"), 48)
 }
@@ -1181,6 +1273,7 @@ fn platform_machine_material() -> Result<String, String> {
 
 fn short_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        .cookie_store(true)
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))
         .user_agent("yier-bubu-desktop-pet/0.4")
@@ -1406,6 +1499,31 @@ mod tests {
             pair_channel_authorization_bytes("abc"),
             b"pair-channel-v1|abc"
         );
+    }
+
+    #[test]
+    fn runtime_endpoint_is_pinned_to_the_deployed_project() {
+        let endpoint = validate_runtime_endpoint(
+            "https://private.example.edgeone.dev?eo_token=abc&eo_time=123",
+            "private.example.edgeone.dev",
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint_request_url(&endpoint, "/api/pair")
+                .unwrap()
+                .as_str(),
+            "https://private.example.edgeone.dev/api/pair?eo_token=abc&eo_time=123"
+        );
+        assert!(validate_runtime_endpoint(
+            "https://attacker.example/api?eo_token=abc&eo_time=123",
+            "private.example.edgeone.dev"
+        )
+        .is_none());
+        assert!(validate_runtime_endpoint(
+            "https://private.example.edgeone.dev?eo_token=abc&eo_time=123&next=evil",
+            "private.example.edgeone.dev"
+        )
+        .is_none());
     }
 
     #[test]

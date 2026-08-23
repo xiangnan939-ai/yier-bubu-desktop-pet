@@ -57,9 +57,6 @@ importers:
       '@edgeone/pages-blob':
         specifier: 0.0.16
         version: 0.0.16
-      tls-sig-api-v2:
-        specifier: 1.0.2
-        version: 1.0.2
 
 packages:
 
@@ -723,9 +720,6 @@ packages:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
     engines: {node: '>=12.0.0'}
 
-  tls-sig-api-v2@1.0.2:
-    resolution: {integrity: sha512-LJjc3pFJMv45eoEnY7qv/ZdMg06Rb+8zZtyM5inTlteA3KkMIw5buJmFtZFmkmQQAaLXOjFHAfY+S4giaoTpDw==}
-
   trtc-sdk-v5@5.19.1:
     resolution: {integrity: sha512-MjT3LjgRHdggbEn/jzgxDrzvSGy+av2940I7wmSvXApmiAtR8NsBRFAo95EOebLbt3y8lcnoir03AkTyDQUuXQ==}
 
@@ -1327,8 +1321,6 @@ snapshots:
     dependencies:
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-
-  tls-sig-api-v2@1.0.2: {}
 
   trtc-sdk-v5@5.19.1:
     dependencies:

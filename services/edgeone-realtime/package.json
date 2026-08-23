@@ -5,7 +5,6 @@
   "type": "module",
   "license": "UNLICENSED",
   "dependencies": {
-    "@edgeone/pages-blob": "0.0.16",
-    "tls-sig-api-v2": "1.0.2"
+    "@edgeone/pages-blob": "0.0.16"
   }
 }

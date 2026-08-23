@@ -31,7 +31,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 hmac = "0.12"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["cookies", "json", "rustls"] }
 semver = "1"
 sha2 = "0.10"
 spake2 = "0.4"

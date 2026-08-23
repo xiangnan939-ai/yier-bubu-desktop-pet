@@ -1,10 +1,9 @@
-import TLSSigAPIv2 from "tls-sig-api-v2";
 import {
-  authorizeRecord, enrollmentForRole, failure, json, partnerRole, readBody,
-  signalingUserId, verifyEd25519,
+  authorizeRecord, enrollmentForRole, failure, generateUserSig, json, partnerRole,
+  readBody, signalingUserId, verifyEd25519,
 } from "./_shared.js";
 
-const EXPIRE_SECONDS = 7 * 24 * 60 * 60;
+const EXPIRE_SECONDS = 30 * 24 * 60 * 60;
 
 export async function onRequest({ request }) {
   try {
@@ -25,8 +24,7 @@ export async function onRequest({ request }) {
     if (!verifyEd25519(proof.publicKey, proofBytes, signature)) return failure("联网凭证请求签名无效", 403);
     const userId = await signalingUserId(record, proof.role);
     const partnerUserId = await signalingUserId(record, partnerRole(proof.role));
-    const signer = new TLSSigAPIv2.Api(sdkAppId, sdkSecret);
-    const userSig = signer.genSig(userId, EXPIRE_SECONDS);
+    const userSig = generateUserSig(sdkAppId, sdkSecret, userId, EXPIRE_SECONDS);
     return json({
       sdkAppId,
       userId,
