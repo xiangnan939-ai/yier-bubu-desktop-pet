@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   LogicalPosition,
   LogicalSize,
@@ -81,6 +82,12 @@ type AssetUpdateResult = {
   version: string | null;
   message: string;
 };
+type UpdateProgress = {
+  updateType: "app" | "assets";
+  phase: "downloading" | "installing" | "complete";
+  downloadedBytes: number;
+  totalBytes: number | null;
+};
 type InstalledAssetPack = {
   version: string | null;
   assets: Array<{ action: string; path: string; sourcePath: string }>;
@@ -108,6 +115,14 @@ const DEFAULT_ACTION_RULES: ActionRules = {
   workMinMinutes: 3,
   workMaxMinutes: 5,
 };
+
+const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
 
 function safeNumber(value: unknown, fallback: number, min: number, max: number) {
   return typeof value === "number" && Number.isFinite(value)
@@ -156,7 +171,7 @@ const MENU_HEIGHT = 94;
 const SETTINGS_WIDTH = 420;
 const SETTINGS_HEIGHT = 700;
 const BINDING_WIDTH = 420;
-const BINDING_HEIGHT = 350;
+const BINDING_HEIGHT = 410;
 
 const fallbackProfile: AppProfile = /Mac/i.test(navigator.userAgent)
   ? { role: "yier", petName: "一二", partnerName: "布布", remoteMenuLabel: "看看TA在干嘛", platform: "macos" }
@@ -369,6 +384,10 @@ function BindingSetup() {
             {busy ? "正在安全绑定…" : `绑定我的${profile.petName}`}
           </button>
           <p className="binding-message">{message}</p>
+          <button className="tailscale-help" onClick={() => openUrl(TAILSCALE_DOWNLOAD_URL)}>
+            安装或打开 Tailscale
+          </button>
+          <p className="binding-hint">两台电脑都需安装、登录同一个 Tailscale 账号并保持已连接。</p>
         </>
       )}
     </main>
@@ -388,6 +407,7 @@ function Settings() {
   const [updateMessage, setUpdateMessage] = useState("正在读取更新状态…");
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [installingApp, setInstallingApp] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
 
   useEffect(() => {
     invoke<AppProfile>("app_profile").then((value) => {
@@ -409,6 +429,15 @@ function Settings() {
   }, []);
 
   useEffect(() => {
+    const unlisten = listen<UpdateProgress>("update-download-progress", (event) => {
+      setUpdateProgress(event.payload);
+    });
+    return () => {
+      unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
     const refresh = () => invoke<BindingStatus>("binding_status").then(setBinding).catch(() => undefined);
     const unlisten = listen("binding-changed", refresh);
     const timer = window.setInterval(refresh, 2_000);
@@ -421,6 +450,7 @@ function Settings() {
   const checkUpdates = async () => {
     if (!updateConfig || checkingUpdates) return;
     setCheckingUpdates(true);
+    setUpdateProgress(null);
     setError("");
     const messages: string[] = [];
     try {
@@ -440,6 +470,7 @@ function Settings() {
       setUpdateMessage(messages.length ? messages.join("；") : "发布地址尚未配置");
     } catch (reason) {
       setUpdateMessage(`检查更新失败：${String(reason)}`);
+      setUpdateProgress(null);
     } finally {
       setCheckingUpdates(false);
     }
@@ -448,6 +479,7 @@ function Settings() {
   const installProgramUpdate = async () => {
     if (installingApp) return;
     setInstallingApp(true);
+    setUpdateProgress(null);
     setUpdateMessage("正在下载并验证程序更新，请不要关闭软件…");
     try {
       await invoke("install_app_update");
@@ -455,6 +487,7 @@ function Settings() {
       await relaunch();
     } catch (reason) {
       setUpdateMessage(`程序更新失败：${String(reason)}`);
+      setUpdateProgress(null);
       setInstallingApp(false);
     }
   };
@@ -509,6 +542,27 @@ function Settings() {
       <section className="settings-section update-section">
         <div className="setting-heading"><h2>联网更新</h2><strong>程序 {updateConfig?.currentVersion ?? "…"}</strong></div>
         <p>{updateMessage}</p>
+        {updateProgress && <div className="update-progress" aria-live="polite">
+          <div className="update-progress-label">
+            <span>{updateProgress.updateType === "app" ? "程序更新" : "动作素材"} · {
+              updateProgress.phase === "downloading" ? "正在下载"
+                : updateProgress.phase === "installing" ? "正在验证并安装" : "更新完成"
+            }</span>
+            <strong>{updateProgress.phase === "downloading" && updateProgress.totalBytes
+              ? `${Math.min(100, Math.round(updateProgress.downloadedBytes / updateProgress.totalBytes * 100))}%`
+              : updateProgress.phase === "complete" ? "100%" : "请稍候"}</strong>
+          </div>
+          <div className={`update-progress-track ${updateProgress.phase !== "downloading"
+            || !updateProgress.totalBytes ? "indeterminate" : ""}`}>
+            <span style={updateProgress.phase === "downloading" && updateProgress.totalBytes
+              ? { width: `${Math.min(100, updateProgress.downloadedBytes / updateProgress.totalBytes * 100)}%` }
+              : undefined} />
+          </div>
+          {updateProgress.phase === "downloading" && <small>
+            已下载 {formatBytes(updateProgress.downloadedBytes)}
+            {updateProgress.totalBytes ? ` / ${formatBytes(updateProgress.totalBytes)}` : ""}
+          </small>}
+        </div>}
         <div className="update-meta">
           <span>{profile.petName}素材：{assetVersion ?? "安装包内置版"}</span>
           <span>校验：HTTPS + 数字签名</span>
@@ -534,6 +588,8 @@ function Settings() {
           {binding?.createdAtMs && <span>绑定时间：{new Date(binding.createdAtMs).toLocaleString()}</span>}
         </div>
         <p>{bindingMessage}</p>
+        {(binding?.state === "unbound" || binding?.state === "revoked")
+          && <button onClick={() => openUrl(TAILSCALE_DOWNLOAD_URL)}>安装或打开 Tailscale</button>}
         {binding?.incomingUnbind && !binding.approvalPending && <div className="unbind-request">
           <strong>{binding.requestedByName}请求解除绑定</strong>
           <p>只有你明确同意后才会解绑；拒绝会继续保留当前绑定。</p>

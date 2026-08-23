@@ -1255,6 +1255,16 @@ fn tailscale_candidates() -> Vec<PathBuf> {
             PathBuf::from("/usr/local/bin/tailscale"),
             PathBuf::from("/opt/homebrew/bin/tailscale"),
         ]);
+        if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(
+                PathBuf::from(home)
+                    .join("Applications")
+                    .join("Tailscale.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("Tailscale"),
+            );
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -1273,18 +1283,35 @@ fn tailscale_candidates() -> Vec<PathBuf> {
 async fn tailscale_status() -> Result<TailStatus, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let mut last_error = String::new();
+        let mut command_found = false;
         for binary in tailscale_candidates() {
-            match Command::new(&binary).args(["status", "--json"]).output() {
+            let mut command = Command::new(&binary);
+            command.args(["status", "--json"]);
+            #[cfg(target_os = "macos")]
+            command.env("TAILSCALE_BE_CLI", "1");
+            match command.output() {
                 Ok(output) if output.status.success() => {
                     return parse_tailscale_status(&output.stdout);
                 }
                 Ok(output) => {
+                    command_found = true;
                     last_error = String::from_utf8_lossy(&output.stderr).trim().to_string()
                 }
-                Err(error) => last_error = error.to_string(),
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        command_found = true;
+                    }
+                    last_error = error.to_string();
+                }
             }
         }
-        Err(format!("未找到可用的 Tailscale 命令：{last_error}"))
+        if command_found {
+            Err(format!(
+                "Tailscale 已安装，但尚未正常连接。请打开 Tailscale、登录并确认状态为已连接后重试。详细信息：{last_error}"
+            ))
+        } else {
+            Err("未检测到 Tailscale。请先在 Mac 和 Windows 安装 Tailscale，登录同一个账号并保持连接，再返回重试绑定。".to_string())
+        }
     })
     .await
     .map_err(|error| error.to_string())?

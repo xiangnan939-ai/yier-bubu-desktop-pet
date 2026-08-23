@@ -7,10 +7,11 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signature, VerifyingKey};
+use futures_util::StreamExt;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 use zip::ZipArchive;
 
@@ -57,6 +58,33 @@ pub struct AssetUpdateResult {
     status: &'static str,
     version: Option<String>,
     message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgress {
+    update_type: &'static str,
+    phase: &'static str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+}
+
+fn emit_update_progress(
+    app: &AppHandle,
+    update_type: &'static str,
+    phase: &'static str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let _ = app.emit(
+        "update-download-progress",
+        UpdateProgress {
+            update_type,
+            phase,
+            downloaded_bytes,
+            total_bytes,
+        },
+    );
 }
 
 #[derive(Serialize)]
@@ -133,10 +161,29 @@ pub async fn install_app_update(app: AppHandle) -> Result<(), String> {
         .await
         .map_err(|error| format!("检查程序更新失败：{error}"))?
         .ok_or_else(|| "当前程序已经是最新版".to_string())?;
+    let progress_app = app.clone();
+    let finish_app = app.clone();
+    let mut downloaded_bytes = 0_u64;
     update
-        .download_and_install(|_, _| {}, || {})
+        .download_and_install(
+            move |chunk_length, total_bytes| {
+                downloaded_bytes = downloaded_bytes.saturating_add(chunk_length as u64);
+                emit_update_progress(
+                    &progress_app,
+                    "app",
+                    "downloading",
+                    downloaded_bytes,
+                    total_bytes,
+                );
+            },
+            move || {
+                emit_update_progress(&finish_app, "app", "installing", 0, None);
+            },
+        )
         .await
-        .map_err(|error| format!("安装程序更新失败：{error}"))
+        .map_err(|error| format!("安装程序更新失败：{error}"))?;
+    emit_update_progress(&app, "app", "complete", 0, None);
+    Ok(())
 }
 
 fn asset_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -408,6 +455,7 @@ async fn download_bytes(
     client: &reqwest::Client,
     url: &str,
     limit: usize,
+    progress: Option<(&AppHandle, &'static str)>,
 ) -> Result<Vec<u8>, String> {
     require_safe_remote_url(url)?;
     let response = client
@@ -423,14 +471,33 @@ async fn download_bytes(
     {
         return Err("更新文件超过安全大小限制".to_string());
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("读取更新文件失败：{error}"))?;
-    if bytes.len() > limit {
-        return Err("更新文件超过安全大小限制".to_string());
+    let total_bytes = response.content_length();
+    let mut downloaded_bytes = 0_u64;
+    let mut bytes = Vec::with_capacity(
+        total_bytes
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or_default()
+            .min(limit),
+    );
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("读取更新文件失败：{error}"))?;
+        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+        if downloaded_bytes > limit as u64 {
+            return Err("更新文件超过安全大小限制".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+        if let Some((app, update_type)) = progress {
+            emit_update_progress(
+                app,
+                update_type,
+                "downloading",
+                downloaded_bytes,
+                total_bytes,
+            );
+        }
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 #[tauri::command]
@@ -459,7 +526,7 @@ pub async fn check_and_install_asset_update(app: AppHandle) -> Result<AssetUpdat
         ))
         .build()
         .map_err(|error| format!("创建更新客户端失败：{error}"))?;
-    let manifest_bytes = download_bytes(&client, manifest_url, 256 * 1024).await?;
+    let manifest_bytes = download_bytes(&client, manifest_url, 256 * 1024, None).await?;
     let manifest: AssetManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| format!("素材清单格式错误：{error}"))?;
     verify_manifest(&manifest, public_key)?;
@@ -492,7 +559,14 @@ pub async fn check_and_install_asset_update(app: AppHandle) -> Result<AssetUpdat
         }
     }
 
-    let pack_bytes = download_bytes(&client, &manifest.pack_url, MAX_PACK_BYTES).await?;
+    let pack_bytes = download_bytes(
+        &client,
+        &manifest.pack_url,
+        MAX_PACK_BYTES,
+        Some((&app, "assets")),
+    )
+    .await?;
+    emit_update_progress(&app, "assets", "installing", 0, None);
     let actual_hash = format!("{:x}", Sha256::digest(&pack_bytes));
     if !actual_hash.eq_ignore_ascii_case(&manifest.sha256) {
         return Err("素材包 SHA-256 不一致，已拒绝安装".to_string());
@@ -514,6 +588,7 @@ pub async fn check_and_install_asset_update(app: AppHandle) -> Result<AssetUpdat
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
+    emit_update_progress(&app, "assets", "complete", 0, None);
     Ok(AssetUpdateResult {
         status: "updated",
         version: Some(manifest.version),

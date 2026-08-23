@@ -49,6 +49,14 @@ button, input { font: inherit; }
 .update-actions button { border: 0; border-radius: 9px; padding: 8px 12px; cursor: pointer; background: #eee2db; color: #51352b; font-size: 12px; }
 .update-actions button.primary { color: white; background: #df7882; }
 .update-actions button:disabled { cursor: default; opacity: .55; }
+.update-progress { display: grid; gap: 6px; margin-top: 11px; padding: 10px 11px; border-radius: 10px; background: #fff6f2; }
+.update-progress-label { display: flex; justify-content: space-between; color: #725248; font-size: 11px; }
+.update-progress-label strong { color: #d56675; }
+.update-progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: #eadbd4; }
+.update-progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ee949b, #d96d7b); transition: width .18s ease; }
+.update-progress-track.indeterminate span { width: 38%; animation: update-progress-slide 1.1s ease-in-out infinite; }
+.update-progress small { color: #9a8177; font-size: 10px; }
+@keyframes update-progress-slide { from { transform: translateX(-110%); } to { transform: translateX(270%); } }
 .settings-shell footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .settings-shell footer button { border: 0; border-radius: 9px; padding: 9px 16px; cursor: pointer; background: #eee2db; color: #51352b; }
 .settings-shell footer button.primary { color: white; background: #df7882; }
@@ -77,6 +85,8 @@ button, input { font: inherit; }
 .binding-shell button.wide { width: 100%; }
 .binding-shell button:disabled { cursor: default; opacity: .6; }
 .binding-shell .binding-message { min-height: 38px; margin-top: 11px; color: #9b5d63; }
+.binding-shell button.tailscale-help { padding: 3px 7px; color: #b65261; background: transparent; text-decoration: underline; }
+.binding-shell .binding-hint { margin-top: 4px; color: #a08a81; font-size: 10px; }
 
 .viewer-shell { width: 100%; height: 100%; display: grid; grid-template-rows: 58px 1fr; background: #171517; color: white; }
 .viewer-shell header { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; background: #242024; border-bottom: 1px solid #3a343a; }
