@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -22,6 +22,7 @@ const KEYRING_SERVICE: &str = "com.yierbubu.desktop-pet";
 const STATE_FILE: &str = "private-binding.json";
 const CREDENTIAL_FILE: &str = "realtime-credentials.json";
 const CREDENTIAL_KEYRING_USER: &str = "realtime-credentials";
+const SIGNING_KEY_FILE: &str = "device-signing-key-v1";
 const PAIRING_LIFETIME: Duration = Duration::from_secs(180);
 const REQUEST_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const SIGNAL_LIFETIME: Duration = Duration::from_secs(120);
@@ -278,6 +279,7 @@ pub struct BindingManager {
 impl BindingManager {
     pub fn new(app: AppHandle, app_data_dir: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
+        let signing_key = load_or_create_signing_key(&app_data_dir)?;
         let state_path = app_data_dir.join(STATE_FILE);
         let state = if state_path.exists() {
             serde_json::from_slice(&fs::read(&state_path).map_err(|error| error.to_string())?)
@@ -291,7 +293,7 @@ impl BindingManager {
             state_path,
             state: Arc::new(RwLock::new(state)),
             seen_signal_nonces: Arc::new(Mutex::new(HashMap::new())),
-            signing_key: Arc::new(load_or_create_signing_key()?),
+            signing_key: Arc::new(signing_key),
         })
     }
 
@@ -1219,19 +1221,58 @@ fn short_hash(value: &str, length: usize) -> String {
     hex_encode(&digest)[..length.min(digest.len() * 2)].to_string()
 }
 
-fn load_or_create_signing_key() -> Result<SigningKey, String> {
+fn decode_signing_key(encoded: &str) -> Result<SigningKey, String> {
+    let bytes = BASE64
+        .decode(encoded.trim())
+        .map_err(|_| "系统安全存储中的设备密钥损坏".to_string())?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "系统安全存储中的设备密钥长度无效".to_string())?;
+    Ok(SigningKey::from_bytes(&bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn load_or_create_signing_key(app_data_dir: &Path) -> Result<SigningKey, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fallback_path = app_data_dir.join(SIGNING_KEY_FILE);
+    if fallback_path.exists() {
+        return decode_signing_key(
+            &fs::read_to_string(&fallback_path).map_err(|error| error.to_string())?,
+        );
+    }
+
+    let entry = keyring::Entry::new(KEYRING_SERVICE, "device-signing-key")
+        .map_err(|error| error.to_string())?;
+    let key = match entry.get_password() {
+        Ok(encoded) => decode_signing_key(&encoded)?,
+        Err(keyring::Error::NoEntry) => {
+            let key = SigningKey::generate(&mut OsRng);
+            if let Err(error) = entry.set_password(&BASE64.encode(key.to_bytes())) {
+                eprintln!("Mac 系统安全存储不可写，改用仅当前用户可读的设备密钥文件：{error}");
+            }
+            key
+        }
+        Err(error) => {
+            eprintln!("Mac 系统安全存储不可读，改用仅当前用户可读的设备密钥文件：{error}");
+            SigningKey::generate(&mut OsRng)
+        }
+    };
+
+    let temporary = fallback_path.with_extension("tmp");
+    fs::write(&temporary, BASE64.encode(key.to_bytes())).map_err(|error| error.to_string())?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+        .map_err(|error| error.to_string())?;
+    fs::rename(temporary, fallback_path).map_err(|error| error.to_string())?;
+    Ok(key)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn load_or_create_signing_key(_app_data_dir: &Path) -> Result<SigningKey, String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, "device-signing-key")
         .map_err(|error| error.to_string())?;
     match entry.get_password() {
-        Ok(encoded) => {
-            let bytes = BASE64
-                .decode(encoded)
-                .map_err(|_| "系统安全存储中的设备密钥损坏".to_string())?;
-            let bytes: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| "系统安全存储中的设备密钥长度无效".to_string())?;
-            Ok(SigningKey::from_bytes(&bytes))
-        }
+        Ok(encoded) => decode_signing_key(&encoded),
         Err(keyring::Error::NoEntry) => {
             let key = SigningKey::generate(&mut OsRng);
             entry
@@ -1565,6 +1606,13 @@ mod tests {
             decode_runtime_config(&wrapped).unwrap().endpoint,
             "https://private.example.edgeone.dev?eo_token=abc&eo_time=123"
         );
+    }
+
+    #[test]
+    fn signing_key_encoding_round_trip_is_stable() {
+        let original = SigningKey::from_bytes(&[7; 32]);
+        let decoded = decode_signing_key(&BASE64.encode(original.to_bytes())).unwrap();
+        assert_eq!(decoded.verifying_key(), original.verifying_key());
     }
 
     #[test]

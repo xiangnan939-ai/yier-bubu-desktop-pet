@@ -1,6 +1,11 @@
 name: 刷新桌宠联网入口
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/refresh-realtime-endpoint.yml
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
@@ -26,6 +31,8 @@ jobs:
         run: |
           set -euo pipefail
           RESPONSE="$(curl --fail --silent --show-error \
+            --retry 5 --retry-delay 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 30 \
             'https://pages-api.cloud.tencent.com/v1' \
             -H 'Content-Type: application/json' \
             -H "Authorization: Bearer ${EDGEONE_PAGES_API_TOKEN}" \
