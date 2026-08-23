@@ -341,9 +341,9 @@ impl BindingManager {
     }
 
     pub async fn pair(&self, passphrase: String) -> Result<PairingResult, String> {
-        let passphrase = passphrase.trim().to_string();
-        if passphrase.chars().count() < 12 {
-            return Err("联网绑定口令至少需要 12 个字符".into());
+        let passphrase = normalize_pairing_code(&passphrase);
+        if passphrase.len() != 16 {
+            return Err("请输入 Mac 生成的完整 16 位配对码".into());
         }
         if !realtime_service_available() {
             return Err("联网服务尚未写入这个安装包，请先安装正式发布版".into());
@@ -1199,6 +1199,14 @@ fn pair_channel(passphrase: &str) -> String {
     short_hash(&format!("yier-bubu-pair-v2|{passphrase}"), 48)
 }
 
+fn normalize_pairing_code(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_uppercase())
+        .collect()
+}
+
 fn signaling_user_id(core: &BindingCore, role: &str) -> String {
     let enrollment = if role == "yier" {
         &core.mac
@@ -1562,6 +1570,14 @@ mod tests {
         assert_eq!(
             pair_channel_authorization_bytes("abc"),
             b"pair-channel-v1|abc"
+        );
+    }
+
+    #[test]
+    fn pairing_code_normalization_ignores_grouping_and_case() {
+        assert_eq!(
+            normalize_pairing_code("abcd-2345 efgh-6789"),
+            "ABCD2345EFGH6789"
         );
     }
 

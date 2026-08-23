@@ -163,7 +163,8 @@ const MENU_HEIGHT = 94;
 const SETTINGS_WIDTH = 420;
 const SETTINGS_HEIGHT = 700;
 const BINDING_WIDTH = 420;
-const BINDING_HEIGHT = 410;
+const BINDING_HEIGHT = 450;
+const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 const fallbackProfile: AppProfile = /Mac/i.test(navigator.userAgent)
   ? { role: "yier", petName: "一二", partnerName: "布布", remoteMenuLabel: "看看TA在干嘛", platform: "macos" }
@@ -180,6 +181,19 @@ function loadPetSize() {
 
 function wait(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function normalizePairingCode(value: string) {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+}
+
+function formatPairingCode(value: string) {
+  return normalizePairingCode(value).match(/.{1,4}/g)?.join("-") ?? "";
+}
+
+function generatePairingCode() {
+  const random = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(random, (byte) => PAIRING_CODE_ALPHABET[byte & 31]).join("");
 }
 
 async function openBindingWindow() {
@@ -298,7 +312,7 @@ function BindingSetup() {
   const [profile, setProfile] = useState(fallbackProfile);
   const [status, setStatus] = useState<BindingStatus | null>(null);
   const [passphrase, setPassphrase] = useState("");
-  const [message, setMessage] = useState("两台电脑输入完全相同的口令后，会自动找到彼此并完成绑定。");
+  const [message, setMessage] = useState("绑定完成后，桌宠才会出现在桌面上。");
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(() => invoke<BindingStatus>("binding_status").then(setStatus), []);
@@ -309,16 +323,17 @@ function BindingSetup() {
     return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
   }, [refresh]);
 
-  const pair = async () => {
+  const pair = async (code = passphrase) => {
     if (busy) return;
-    if (passphrase.trim().length < 12) {
-      setMessage("联网绑定口令至少需要 12 个字符。");
+    const normalized = normalizePairingCode(code);
+    if (normalized.length !== 16) {
+      setMessage("请输入 Mac 上生成的完整 16 位配对码。");
       return;
     }
     setBusy(true);
-    setMessage(profile.role === "bubu" ? "正在等待一二输入相同口令…" : "正在寻找等待绑定的布布电脑…");
+    setMessage(profile.role === "bubu" ? "正在连接 Mac 上的一二…" : "配对码已生成，正在等待 Windows 上的布布输入…");
     try {
-      const result = await invoke<PairingResult>("pair_device", { passphrase });
+      const result = await invoke<PairingResult>("pair_device", { passphrase: normalized });
       setPassphrase("");
       setMessage(result.message);
       await refresh();
@@ -331,11 +346,17 @@ function BindingSetup() {
     }
   };
 
+  const generateAndWait = () => {
+    const code = generatePairingCode();
+    setPassphrase(code);
+    pair(code);
+  };
+
   const alreadyBound = status?.state === "bound" || status?.state === "revoking";
   return (
     <main className="binding-shell">
       <div className="binding-mark">{profile.petName}</div>
-      <h1>{alreadyBound ? `${profile.petName}已经绑定` : `输入口令绑定我的${profile.petName}`}</h1>
+      <h1>{alreadyBound ? `${profile.petName}已经绑定` : profile.role === "yier" ? "生成配对码" : "输入配对码"}</h1>
       {alreadyBound ? (
         <>
           <p>当前绑定对象：{status?.partnerName}。绑定后只能由双方签名同意才能解除。</p>
@@ -343,16 +364,29 @@ function BindingSetup() {
         </>
       ) : (
         <>
-          <p>请在 Mac 和 Windows 上输入同一串字符。口令只参与这一次绑定，不会保存。</p>
-          <input autoFocus type="password" value={passphrase} disabled={busy}
-            onChange={(event) => setPassphrase(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") pair(); }}
-            placeholder="输入双方约定的绑定口令" />
-          <button className="primary wide" disabled={busy} onClick={pair}>
-            {busy ? "正在安全绑定…" : `绑定我的${profile.petName}`}
-          </button>
+          {profile.role === "yier" ? (
+            <>
+              <p>在 Mac 上生成一次性配对码，再把它输入 Windows 上的布布。配对码 3 分钟内有效。</p>
+              {passphrase && <div className="pairing-code" aria-label="配对码">{formatPairingCode(passphrase)}</div>}
+              <button className="primary wide" disabled={busy} onClick={generateAndWait}>
+                {busy ? "正在等待 Windows 输入…" : "生成配对码"}
+              </button>
+            </>
+          ) : (
+            <>
+              <p>输入 Mac 上的一二生成的配对码，验证两台电脑后即可显示桌宠。</p>
+              <input autoFocus type="text" inputMode="text" autoComplete="off" spellCheck={false}
+                value={formatPairingCode(passphrase)} disabled={busy} maxLength={19}
+                onChange={(event) => setPassphrase(normalizePairingCode(event.target.value))}
+                onKeyDown={(event) => { if (event.key === "Enter") pair(); }}
+                placeholder="XXXX-XXXX-XXXX-XXXX" />
+              <button className="primary wide" disabled={busy} onClick={() => pair()}>
+                {busy ? "正在安全绑定…" : "完成绑定"}
+              </button>
+            </>
+          )}
           <p className="binding-message">{message}</p>
-          <p className="binding-hint">联网能力已内置在桌宠中，不需要安装或登录其他软件。</p>
+          <p className="binding-hint">配对码不会保存；绑定记录仍由双方设备签名并锁定机器特征。</p>
         </>
       )}
     </main>
@@ -763,9 +797,6 @@ function Pet() {
   useEffect(() => {
     invoke<AppProfile>("app_profile").then(setProfile).catch(() => undefined);
     localStorage.removeItem("pairing");
-    invoke<BindingStatus>("binding_status").then((status) => {
-      if (status.state === "unbound" || status.state === "revoked") openBindingWindow();
-    }).catch(() => undefined);
     const size = loadPetSize();
     setPetSize(size);
     getCurrentWindow().setSize(new LogicalSize(size, size)).catch(() => undefined);
@@ -1154,11 +1185,48 @@ function Pet() {
   );
 }
 
+function PetGate() {
+  const [usable, setUsable] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const main = getCurrentWindow();
+    try {
+      const status = await invoke<BindingStatus>("binding_status");
+      const allowed = status.state === "bound" || status.state === "revoking";
+      setUsable(allowed);
+      if (allowed) {
+        const size = loadPetSize();
+        await main.setSize(new LogicalSize(size, size));
+        await main.show();
+      } else {
+        await main.hide();
+        await openBindingWindow();
+      }
+    } catch {
+      setUsable(false);
+      await main.hide().catch(() => undefined);
+      await openBindingWindow();
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const bindingListener = listen("binding-changed", refresh);
+    const activateListener = listen("activate-app", refresh);
+    return () => {
+      bindingListener.then((dispose) => dispose()).catch(() => undefined);
+      activateListener.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, [refresh]);
+
+  return usable ? <Pet /> : null;
+}
+
 export default function App() {
   const mode = new URLSearchParams(window.location.search).get("mode");
   if (mode === "viewer") return <Viewer />;
   if (mode === "binding") return <BindingSetup />;
   if (mode === "settings") return <Settings />;
   if (mode === "menu") return <PetMenu />;
-  return <Pet />;
+  return <PetGate />;
 }

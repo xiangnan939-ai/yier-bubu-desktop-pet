@@ -9,7 +9,7 @@ use std::{
 use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{ipc::Response, Manager};
+use tauri::{ipc::Response, Emitter, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use xcap::Monitor;
 
@@ -394,10 +394,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .manage(screen_state)
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            activate_app(app);
         }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -458,7 +455,22 @@ pub fn run() {
         }
     }
 
-    builder
-        .run(tauri::generate_context!())
-        .expect("启动一二布布私人桌宠失败");
+    let app = builder
+        .build(tauri::generate_context!())
+        .expect("构建一二布布私人桌宠失败");
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            activate_app(app);
+        }
+    });
+}
+
+fn activate_app(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("binding") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("activate-app", ());
+    }
 }
