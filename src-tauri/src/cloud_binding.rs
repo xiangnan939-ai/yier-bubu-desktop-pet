@@ -195,6 +195,12 @@ struct RuntimeEndpointConfig {
     expires_at_ms: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubContentResponse {
+    content: String,
+    encoding: String,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PairExchangeResponse<T> {
@@ -1116,12 +1122,14 @@ async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
                 .await
             {
                 if response.status().is_success() {
-                    if let Ok(config) = response.json::<RuntimeEndpointConfig>().await {
-                        if config.expires_at_ms > now_ms() + 5 * 60_000 {
-                            if let Some(endpoint) =
-                                validate_runtime_endpoint(&config.endpoint, expected_host)
-                            {
-                                endpoints.push(endpoint);
+                    if let Ok(bytes) = response.bytes().await {
+                        if let Ok(config) = decode_runtime_config(&bytes) {
+                            if config.expires_at_ms > now_ms() + 5 * 60_000 {
+                                if let Some(endpoint) =
+                                    validate_runtime_endpoint(&config.endpoint, expected_host)
+                                {
+                                    endpoints.push(endpoint);
+                                }
                             }
                         }
                     }
@@ -1135,6 +1143,21 @@ async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
         }
     }
     endpoints
+}
+
+fn decode_runtime_config(bytes: &[u8]) -> Result<RuntimeEndpointConfig, String> {
+    if let Ok(config) = serde_json::from_slice::<RuntimeEndpointConfig>(bytes) {
+        return Ok(config);
+    }
+    let wrapper: GitHubContentResponse =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if wrapper.encoding != "base64" {
+        return Err("联网入口配置编码无效".into());
+    }
+    let decoded = BASE64
+        .decode(wrapper.content.replace(['\r', '\n'], ""))
+        .map_err(|error| error.to_string())?;
+    serde_json::from_slice(&decoded).map_err(|error| error.to_string())
 }
 
 fn validate_runtime_endpoint(value: &str, expected_host: &str) -> Option<String> {
@@ -1524,6 +1547,24 @@ mod tests {
             "private.example.edgeone.dev"
         )
         .is_none());
+    }
+
+    #[test]
+    fn runtime_config_accepts_direct_and_github_content_responses() {
+        let raw = br#"{"endpoint":"https://private.example.edgeone.dev?eo_token=abc&eo_time=123","expiresAtMs":9999999999999}"#;
+        assert_eq!(
+            decode_runtime_config(raw).unwrap().expires_at_ms,
+            9_999_999_999_999
+        );
+        let wrapped = serde_json::to_vec(&json!({
+            "encoding": "base64",
+            "content": BASE64.encode(raw),
+        }))
+        .unwrap();
+        assert_eq!(
+            decode_runtime_config(&wrapped).unwrap().endpoint,
+            "https://private.example.edgeone.dev?eo_token=abc&eo_time=123"
+        );
     }
 
     #[test]
