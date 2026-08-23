@@ -73,6 +73,9 @@ button, input { font: inherit; }
 .settings-section button.primary-inline { color: white; background: #df7882; }
 .update-actions button.danger { color: white; background: #c7505f; }
 .pending-note { margin-top: 9px !important; padding: 8px 10px; border-radius: 8px; background: #fff7e9; color: #986c25 !important; }
+.device-public-key { margin-top: 9px; color: #927b72; font-size: 10px; }
+.device-public-key summary { cursor: pointer; }
+.device-public-key code { display: block; margin-top: 6px; padding: 7px; overflow-wrap: anywhere; border-radius: 7px; background: #f7f0eb; user-select: all; }
 
 .binding-shell { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; padding: 26px 30px; background: #fffaf6; color: #4a3028; text-align: center; }
 .binding-mark { display: grid; place-items: center; width: 58px; height: 58px; margin-bottom: 12px; border-radius: 20px; color: white; background: linear-gradient(135deg, #ef9397, #d76c7b); box-shadow: 0 10px 24px rgba(184, 79, 95, .22); font-size: 18px; font-weight: 800; }
@@ -94,5 +97,5 @@ button, input { font: inherit; }
 .viewer-shell header span { color: #b9afb9; font-size: 12px; }
 .viewer-shell header button { border: 0; border-radius: 9px; padding: 8px 13px; background: #d86f7a; color: white; cursor: pointer; }
 .viewer-stage { min-height: 0; display: grid; place-items: center; padding: 10px; overflow: hidden; }
-.viewer-stage img { width: 100%; height: 100%; object-fit: contain; }
+.viewer-stage video, .viewer-stage > div:not(.viewer-placeholder) { width: 100% !important; height: 100% !important; object-fit: contain; }
 .viewer-placeholder { color: #aea3ae; }

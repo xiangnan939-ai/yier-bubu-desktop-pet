@@ -1,6 +1,6 @@
 [package]
 name = "yier-bubu-desktop-pet"
-version = "0.3.1"
+version = "0.4.0"
 description = "一二与布布的双人私人桌宠"
 authors = ["一二与布布"]
 edition = "2021"
@@ -37,10 +37,9 @@ sha2 = "0.10"
 spake2 = "0.4"
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "4", default-features = false, features = ["deflate"] }
-axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["sync", "time"] }
 xcap = "0.9.8"
 battery = "0.7.8"
 

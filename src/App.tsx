@@ -1,7 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   LogicalPosition,
   LogicalSize,
@@ -23,6 +22,17 @@ import {
   type HotPetAsset,
   type PetRole,
 } from "./petAssets";
+import {
+  RealtimeMessaging,
+  ScreenPublisher,
+  VIEW_SESSION_KEY,
+  createViewSession,
+  loadViewSession,
+  realtimeError,
+  startScreenViewer,
+  type SignedSignal,
+  type ViewSession,
+} from "./realtime";
 import "./App.css";
 
 type AppProfile = {
@@ -39,33 +49,17 @@ type BindingStatus = {
   petName: string;
   partnerName: string;
   bindingId: string | null;
-  partnerHost: string | null;
+  partnerUserId: string | null;
   partnerMachineCode: string | null;
   createdAtMs: number | null;
   incomingUnbind: boolean;
   outgoingUnbind: boolean;
   approvalPending: boolean;
   requestedByName: string | null;
+  realtimeConfigured: boolean;
+  localPublicKey: string;
 };
 type PairingResult = { state: string; message: string };
-type ScreenAuth = {
-  messageType: string;
-  bindingId: string;
-  role: string;
-  publicKey: string;
-  nonce: string;
-  timestampMs: number;
-  signature: string;
-};
-type ScreenServerAuth = {
-  messageType: string;
-  bindingId: string;
-  clientNonce: string;
-  serverNonce: string;
-  timestampMs: number;
-  signature: string;
-};
-type ScreenConnectionInfo = { partnerHost: string; auth: ScreenAuth };
 type UpdateConfiguration = {
   currentVersion: string;
   appUpdateEnabled: boolean;
@@ -115,8 +109,6 @@ const DEFAULT_ACTION_RULES: ActionRules = {
   workMinMinutes: 3,
   workMaxMinutes: 5,
 };
-
-const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
 
 function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
@@ -249,67 +241,45 @@ async function positionBesidePet(width: number, height: number, gap = 12) {
 
 function Viewer() {
   const [status, setStatus] = useState("正在连接对方电脑…");
-  const [frame, setFrame] = useState("");
-  const lastUrl = useRef("");
+  const stageRef = useRef<HTMLDivElement>(null);
+  const sessionRef = useRef<ViewSession | null>(null);
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
-    let stopped = false;
-    let authenticated = false;
-    invoke<ScreenConnectionInfo>("screen_connection_info").then((connection) => {
-      if (stopped) return;
-      socket = new WebSocket(`ws://${connection.partnerHost}:39821/screen`);
-      socket.binaryType = "blob";
-      socket.onopen = () => {
-        setStatus("正在验证双方设备身份…");
-        socket?.send(JSON.stringify(connection.auth));
-      };
-      socket.onerror = () => {
-        setStatus("连接失败，请确认对方在线且 Tailscale 已连接");
-        emitTo("main", "viewer-status", "failed").catch(() => undefined);
-      };
-      socket.onclose = () => {
-        if (!stopped) setStatus(authenticated ? "连接已断开" : "设备认证未完成");
-      };
-      socket.onmessage = async (event) => {
-        if (typeof event.data === "string") {
-          let serverAuth: ScreenServerAuth;
-          try {
-            serverAuth = JSON.parse(event.data) as ScreenServerAuth;
-          } catch {
-            setStatus(event.data);
-            socket?.close();
-            emitTo("main", "viewer-status", "failed").catch(() => undefined);
-            return;
-          }
-          try {
-            if (serverAuth.messageType !== "screenAuthOk") throw new Error("对方设备认证响应无效");
-            const valid = await invoke<boolean>("verify_screen_server_auth", { auth: serverAuth });
-            if (!valid) throw new Error("对方设备签名无效");
-            authenticated = true;
-            setStatus("已连接 · 双向设备认证 · 只读实时画面");
-            emitTo("main", "viewer-status", "connected").catch(() => undefined);
-          } catch (reason) {
-            setStatus(String(reason instanceof Error ? reason.message : reason));
-            socket?.close();
-            emitTo("main", "viewer-status", "failed").catch(() => undefined);
-          }
-          return;
-        }
-        if (!authenticated || !(event.data instanceof Blob)) return;
-        const url = URL.createObjectURL(event.data);
-        if (lastUrl.current) URL.revokeObjectURL(lastUrl.current);
-        lastUrl.current = url;
-        setFrame(url);
-      };
+    let closeViewer: (() => Promise<void>) | null = null;
+    let closing = false;
+    let closeListener: (() => void) | null = null;
+    const sendStop = async () => {
+      const session = sessionRef.current;
+      if (!session) return;
+      const signal = await invoke<SignedSignal>("make_realtime_signal", {
+        messageType: "viewStop", payload: session,
+      });
+      await emitTo("main", "send-realtime-signal", signal);
+    };
+    getCurrentWindow().onCloseRequested(async (event) => {
+      if (closing) return;
+      event.preventDefault();
+      closing = true;
+      await closeViewer?.().catch(() => undefined);
+      await sendStop().catch(() => undefined);
+      await getCurrentWindow().destroy();
+    }).then((dispose) => { closeListener = dispose; }).catch(() => undefined);
+    Promise.resolve().then(async () => {
+      const session = loadViewSession();
+      sessionRef.current = session;
+      if (!stageRef.current) throw new Error("画面窗口尚未就绪");
+      closeViewer = await startScreenViewer(stageRef.current, session, (next) => {
+        setStatus(next);
+        if (next.startsWith("已连接")) emitTo("main", "viewer-status", "connected").catch(() => undefined);
+      });
     }).catch((reason) => {
-      setStatus(String(reason));
+      setStatus(`连接失败：${realtimeError(reason)}`);
       emitTo("main", "viewer-status", "failed").catch(() => undefined);
     });
     return () => {
-      stopped = true;
-      socket?.close();
-      if (lastUrl.current) URL.revokeObjectURL(lastUrl.current);
+      closeListener?.();
+      closeViewer?.().catch(() => undefined);
+      if (!closing) sendStop().catch(() => undefined);
     };
   }, []);
 
@@ -319,9 +289,7 @@ function Viewer() {
         <div><strong>一二布布 · 对方桌面</strong><span>{status}</span></div>
         <button onClick={() => getCurrentWindow().close()}>结束查看</button>
       </header>
-      <section className="viewer-stage">
-        {frame ? <img src={frame} alt="对方实时桌面" /> : <div className="viewer-placeholder">{status}</div>}
-      </section>
+      <section ref={stageRef} className="viewer-stage"><div className="viewer-placeholder">{status}</div></section>
     </main>
   );
 }
@@ -343,8 +311,8 @@ function BindingSetup() {
 
   const pair = async () => {
     if (busy) return;
-    if (passphrase.trim().length < 8) {
-      setMessage("绑定口令至少需要 8 个字符；建议使用 12 个以上字符。");
+    if (passphrase.trim().length < 12) {
+      setMessage("联网绑定口令至少需要 12 个字符。");
       return;
     }
     setBusy(true);
@@ -384,10 +352,7 @@ function BindingSetup() {
             {busy ? "正在安全绑定…" : `绑定我的${profile.petName}`}
           </button>
           <p className="binding-message">{message}</p>
-          <button className="tailscale-help" onClick={() => openUrl(TAILSCALE_DOWNLOAD_URL)}>
-            安装或打开 Tailscale
-          </button>
-          <p className="binding-hint">两台电脑都需安装、登录同一个 Tailscale 账号并保持已连接。</p>
+          <p className="binding-hint">联网能力已内置在桌宠中，不需要安装或登录其他软件。</p>
         </>
       )}
     </main>
@@ -505,7 +470,9 @@ function Settings() {
     setBindingBusy(true);
     setError("");
     try {
-      setBindingMessage(await invoke<string>("request_unbind"));
+      const signal = await invoke<SignedSignal>("request_unbind");
+      await emitTo("main", "send-realtime-signal", signal);
+      setBindingMessage("已安全发送解绑请求，正在等待对方决定。");
       setBinding(await invoke<BindingStatus>("binding_status"));
     } catch (reason) {
       setError(String(reason));
@@ -519,7 +486,9 @@ function Settings() {
     setBindingBusy(true);
     setError("");
     try {
-      setBindingMessage(await invoke<string>("respond_unbind", { approve }));
+      const signal = await invoke<SignedSignal>("respond_unbind", { approve });
+      await emitTo("main", "send-realtime-signal", signal);
+      setBindingMessage(approve ? "已签名同意，正在等待对方确认完成。" : "已拒绝解绑，当前绑定继续有效。");
       setBinding(await invoke<BindingStatus>("binding_status"));
     } catch (reason) {
       setError(String(reason));
@@ -588,8 +557,12 @@ function Settings() {
           {binding?.createdAtMs && <span>绑定时间：{new Date(binding.createdAtMs).toLocaleString()}</span>}
         </div>
         <p>{bindingMessage}</p>
-        {(binding?.state === "unbound" || binding?.state === "revoked")
-          && <button onClick={() => openUrl(TAILSCALE_DOWNLOAD_URL)}>安装或打开 Tailscale</button>}
+        <p className="connection-note">{binding?.realtimeConfigured
+          ? "连接、设备签名和屏幕通道均已内置，不需要额外安装软件。"
+          : "当前是未写入联网服务地址的开发构建；请安装正式发布版。"}</p>
+        {binding?.localPublicKey && <details className="device-public-key">
+          <summary>开发者：本机设备公钥</summary><code>{binding.localPublicKey}</code>
+        </details>}
         {binding?.incomingUnbind && !binding.approvalPending && <div className="unbind-request">
           <strong>{binding.requestedByName}请求解除绑定</strong>
           <p>只有你明确同意后才会解绑；拒绝会继续保留当前绑定。</p>
@@ -679,6 +652,8 @@ function Pet() {
   const workActiveRef = useRef(false);
   const workDueAt = useRef(Date.now() + 60_000);
   const incomingSharingRef = useRef(false);
+  const realtimeRef = useRef<RealtimeMessaging | null>(null);
+  const publisherRef = useRef<ScreenPublisher | null>(null);
   const clickTimesRef = useRef<number[]>([]);
   const drinkDueAt = useRef(Date.now() + DEFAULT_ACTION_RULES.drinkMinMinutes * 60_000);
   const eatDueAt = useRef(Date.now() + DEFAULT_ACTION_RULES.eatMinMinutes * 60_000);
@@ -1012,16 +987,75 @@ function Pet() {
       return;
     }
     try {
+      const messaging = realtimeRef.current;
+      if (!messaging) throw new Error("内置联网通道尚未启动");
+      await messaging.connect();
+      const session = await createViewSession();
+      localStorage.setItem(VIEW_SESSION_KEY, JSON.stringify(session));
+      const signal = await invoke<SignedSignal>("make_realtime_signal", {
+        messageType: "viewRequest", payload: session,
+      });
       const existing = await WebviewWindow.getByLabel("viewer");
       if (existing) await existing.setFocus();
       else new WebviewWindow("viewer", {
         url: "/?mode=viewer", title: "看看TA在干嘛",
         width: 1100, height: 720, center: true, decorations: true, transparent: false,
       });
-    } catch {
-      window.open("/?mode=viewer", "_blank");
+      await messaging.send(signal);
+    } catch (reason) {
+      await emitTo("main", "viewer-status", "failed").catch(() => undefined);
+      console.error("无法打开远程画面", reason);
     }
   }, [runInteraction]);
+
+  useEffect(() => {
+    const publisher = new ScreenPublisher();
+    publisherRef.current = publisher;
+    const messaging = new RealtimeMessaging(async (result, signal) => {
+      const payload = signal.core.payload as Partial<ViewSession> | null;
+      if (result.event === "view-request") {
+        if (!payload || typeof payload.sessionId !== "string" || !Number.isInteger(payload.roomId)
+          || typeof payload.createdAtMs !== "number") return;
+        await publisher.start(payload as ViewSession).catch((reason) => {
+          console.error("无法启动桌面分享", reason);
+        });
+      } else if (result.event === "view-stop" && publisher.matches(payload?.sessionId)) {
+        await publisher.stop();
+      } else if (result.event.startsWith("unbind-")) {
+        await emitTo("settings", "binding-changed").catch(() => undefined);
+        if (result.event === "unbind-approved" || result.event === "unbind-complete") {
+          await publisher.stop();
+          await messaging.close();
+        }
+      }
+    });
+    realtimeRef.current = messaging;
+
+    const connectIfBound = async () => {
+      const status = await invoke<BindingStatus>("binding_status").catch(() => null);
+      if (status?.state === "bound" || status?.state === "revoking") {
+        await messaging.connect().catch((reason) => console.warn("内置联网通道暂未连接", reason));
+      } else {
+        await publisher.stop();
+        await messaging.close();
+      }
+    };
+    connectIfBound();
+    const refreshTimer = window.setInterval(connectIfBound, 6 * 60 * 60_000);
+    const signalListener = listen<SignedSignal>("send-realtime-signal", (event) => {
+      messaging.send(event.payload).catch((reason) => console.error("联网消息发送失败", reason));
+    });
+    const bindingListener = listen("binding-changed", connectIfBound);
+    return () => {
+      window.clearInterval(refreshTimer);
+      signalListener.then((dispose) => dispose()).catch(() => undefined);
+      bindingListener.then((dispose) => dispose()).catch(() => undefined);
+      publisher.stop().catch(() => undefined);
+      messaging.close().catch(() => undefined);
+      publisherRef.current = null;
+      realtimeRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const unlisten = listen("unbind-request-received", () => openSettings());
