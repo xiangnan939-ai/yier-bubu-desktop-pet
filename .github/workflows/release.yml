@@ -44,7 +44,7 @@ jobs:
           YIER_BUBU_ASSET_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/asset-manifest.json
           YIER_BUBU_ASSET_PUBLIC_KEY: ${{ vars.ASSET_UPDATE_PUBLIC_KEY }}
           YIER_BUBU_REALTIME_ENDPOINTS: ${{ vars.YIER_BUBU_REALTIME_ENDPOINTS }}
-          YIER_BUBU_REALTIME_CONFIG_URL: https://github.com/${{ github.repository }}/releases/download/realtime-config/realtime.json
+          YIER_BUBU_REALTIME_CONFIG_URL: https://raw.githubusercontent.com/${{ github.repository }}/runtime-config/realtime.json
           YIER_BUBU_REALTIME_PROJECT_HOST: yier-bubu-private-realtime-btqjaq8u.edgeone.dev
         with:
           tagName: ${{ github.ref_name }}
