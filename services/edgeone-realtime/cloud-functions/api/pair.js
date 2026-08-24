@@ -15,8 +15,6 @@ export async function onRequest({ request }) {
       return json({ cleaned: true });
     }
     if (request.method !== "POST") return failure("请求方法无效", 405);
-    const active = await readActive();
-    if (active?.state === "active") return failure("私有双机服务已完成锁定", 423);
     if (!/^[a-f0-9]{48}$/.test(body.channel || "") || !PHASES.has(body.phase)
       || !ROLES.has(body.role) || !body.payload || Math.abs(Date.now() - body.timestampMs) > 5 * 60_000) {
       return failure("绑定交换请求无效");
@@ -36,6 +34,16 @@ export async function onRequest({ request }) {
       if (!owner || Date.now() - owner.timestampMs > 4 * 60_000) {
         return failure("请先在 Mac 的一二上输入同一口令", 403);
       }
+    }
+    const active = await readActive();
+    if (active?.state === "active") {
+      const macHello = await dataStore.get(
+        `pair/${body.channel}/hello/yier.json`,
+        { type: "json", consistency: "strong" },
+      ).catch(() => null);
+      const samePairing = macHello?.payload?.bindingId === active.bindingId
+        && Date.now() - macHello.timestampMs <= 4 * 60_000;
+      if (!samePairing) return failure("私有双机服务已完成锁定", 423);
     }
     if (!noLongerThan(JSON.stringify(body.payload), 48_000)) return failure("绑定交换数据无效");
     const ownKey = `pair/${body.channel}/${body.phase}/${body.role}.json`;

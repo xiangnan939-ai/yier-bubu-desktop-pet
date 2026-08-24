@@ -208,6 +208,31 @@ struct PairExchangeResponse<T> {
     peer_payload: Option<T>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BindingRecoveryProof {
+    role: String,
+    public_key: String,
+    nonce: String,
+    timestamp_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BindingRecoveryRequest<'a> {
+    action: &'a str,
+    record: Option<&'a BindingRecord>,
+    proof: &'a BindingRecoveryProof,
+    signature: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BindingRecoveryResponse {
+    state: String,
+    record: Option<BindingRecord>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignalCore {
@@ -451,6 +476,85 @@ impl BindingManager {
             state: "bound".into(),
             message: format!("已成功绑定我的{}，无需安装其他软件", local_pet_name()),
         })
+    }
+
+    pub async fn sync_binding_recovery(&self) -> Result<PairingResult, String> {
+        let local_record = {
+            let state = self.state.read().await;
+            if state.revoked {
+                return Err("当前绑定已经解除".into());
+            }
+            state.record.clone()
+        };
+        let action = if local_record.is_some() {
+            "upload"
+        } else if self.role() == "bubu" {
+            "download"
+        } else {
+            return Ok(PairingResult {
+                state: "unbound".into(),
+                message: "请在 Mac 生成配对码".into(),
+            });
+        };
+        if let Some(record) = local_record.as_ref() {
+            self.verify_complete_record(record)?;
+            self.ensure_local_machine(record)?;
+        }
+
+        let proof = BindingRecoveryProof {
+            role: self.role().into(),
+            public_key: self.public_key(),
+            nonce: Uuid::new_v4().to_string(),
+            timestamp_ms: now_ms(),
+        };
+        let signature = self.sign_bytes(&binding_recovery_proof_bytes(&proof));
+        let request = BindingRecoveryRequest {
+            action,
+            record: local_record.as_ref(),
+            proof: &proof,
+            signature: &signature,
+        };
+        let client = short_http_client()?;
+        let mut errors = Vec::new();
+        for endpoint in resolved_endpoints(&client).await {
+            let url = match endpoint_request_url(&endpoint, "/api/recover") {
+                Ok(value) => value,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
+            };
+            match client.post(url).json(&request).send().await {
+                Ok(response) if response.status().is_success() => {
+                    let response: BindingRecoveryResponse =
+                        response.json().await.map_err(|error| error.to_string())?;
+                    if action == "upload" {
+                        return Ok(PairingResult {
+                            state: "bound".into(),
+                            message: "绑定记录已安全同步".into(),
+                        });
+                    }
+                    let record = response
+                        .record
+                        .ok_or_else(|| "云端没有返回绑定恢复记录".to_string())?;
+                    self.verify_complete_record(&record)?;
+                    self.ensure_local_machine(&record)?;
+                    self.replace_with_record(record).await?;
+                    return Ok(PairingResult {
+                        state: response.state,
+                        message: format!("已恢复我的{}绑定", local_pet_name()),
+                    });
+                }
+                Ok(response) => errors.push(
+                    response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "绑定恢复服务返回错误".into()),
+                ),
+                Err(error) => errors.push(error.to_string()),
+            }
+        }
+        Err(format!("暂时无法同步绑定记录：{}", errors.join("；")))
     }
 
     async fn exchange_pair<T>(
@@ -1434,6 +1538,14 @@ fn pair_channel_authorization_bytes(channel: &str) -> Vec<u8> {
     format!("pair-channel-v1|{channel}").into_bytes()
 }
 
+fn binding_recovery_proof_bytes(proof: &BindingRecoveryProof) -> Vec<u8> {
+    format!(
+        "binding-recovery-v1|{}|{}|{}|{}",
+        proof.role, proof.public_key, proof.nonce, proof.timestamp_ms
+    )
+    .into_bytes()
+}
+
 fn unbind_request_bytes(core: &UnbindCore) -> Vec<u8> {
     format!(
         "unbind-request-v1|{}|{}|{}|{}|{}",
@@ -1596,6 +1708,20 @@ mod tests {
         assert_eq!(
             normalize_pairing_code("abcd-2345 efgh-6789"),
             "ABCD2345EFGH6789"
+        );
+    }
+
+    #[test]
+    fn binding_recovery_proof_has_fixed_domain_separator() {
+        let proof = BindingRecoveryProof {
+            role: "bubu".into(),
+            public_key: "public-key".into(),
+            nonce: "nonce".into(),
+            timestamp_ms: 123,
+        };
+        assert_eq!(
+            binding_recovery_proof_bytes(&proof),
+            b"binding-recovery-v1|bubu|public-key|nonce|123"
         );
     }
 

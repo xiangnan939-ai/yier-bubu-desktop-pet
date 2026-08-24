@@ -89,6 +89,13 @@ async fn pair_device(
 }
 
 #[tauri::command]
+async fn sync_binding_recovery(
+    manager: tauri::State<'_, BindingManager>,
+) -> Result<PairingResult, String> {
+    manager.sync_binding_recovery().await
+}
+
+#[tauri::command]
 async fn realtime_credentials(
     force_refresh: bool,
     manager: tauri::State<'_, BindingManager>,
@@ -424,6 +431,7 @@ pub fn run() {
             app_profile,
             binding_status,
             pair_device,
+            sync_binding_recovery,
             realtime_credentials,
             make_realtime_signal,
             process_realtime_signal,

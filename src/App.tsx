@@ -338,7 +338,7 @@ function BindingSetup() {
       setMessage(result.message);
       await refresh();
       await emitTo("main", "binding-changed").catch(() => undefined);
-      window.setTimeout(() => getCurrentWindow().close(), 900);
+      window.setTimeout(() => getCurrentWindow().destroy(), 900);
     } catch (reason) {
       setMessage(String(reason));
     } finally {
@@ -353,6 +353,33 @@ function BindingSetup() {
   };
 
   const alreadyBound = status?.state === "bound" || status?.state === "revoking";
+  useEffect(() => {
+    if (profile.role !== "bubu" || alreadyBound || busy) return;
+    let cancelled = false;
+    let timer = 0;
+    const recover = async () => {
+      try {
+        const result = await invoke<PairingResult>("sync_binding_recovery");
+        if (cancelled) return;
+        if (result.state === "recovered" || result.state === "bound") {
+          setMessage(result.message);
+          await refresh();
+          await emitTo("main", "binding-changed").catch(() => undefined);
+          window.setTimeout(() => getCurrentWindow().destroy(), 700);
+          return;
+        }
+      } catch {
+        // Mac 可能尚未上传完整记录；保留手动配对并在后台继续重试。
+      }
+      if (!cancelled) timer = window.setTimeout(recover, 4000);
+    };
+    recover();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [alreadyBound, busy, profile.role, refresh]);
+
   return (
     <main className="binding-shell">
       <div className="binding-mark">{profile.petName}</div>
@@ -360,7 +387,10 @@ function BindingSetup() {
       {alreadyBound ? (
         <>
           <p>当前绑定对象：{status?.partnerName}。绑定后只能由双方签名同意才能解除。</p>
-          <button className="primary wide" onClick={() => getCurrentWindow().close()}>知道了</button>
+          <button className="primary wide" onClick={async () => {
+            await emitTo("main", "binding-changed").catch(() => undefined);
+            await getCurrentWindow().destroy();
+          }}>知道了</button>
         </>
       ) : (
         <>
@@ -1191,7 +1221,13 @@ function PetGate() {
   const refresh = useCallback(async () => {
     const main = getCurrentWindow();
     try {
-      const status = await invoke<BindingStatus>("binding_status");
+      let status = await invoke<BindingStatus>("binding_status");
+      if (status.state === "bound" || status.state === "revoking") {
+        await invoke<PairingResult>("sync_binding_recovery").catch(() => undefined);
+      } else if (fallbackProfile.role === "bubu") {
+        await invoke<PairingResult>("sync_binding_recovery").catch(() => undefined);
+        status = await invoke<BindingStatus>("binding_status");
+      }
       const allowed = status.state === "bound" || status.state === "revoking";
       setUsable(allowed);
       if (allowed) {
