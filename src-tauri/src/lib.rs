@@ -411,8 +411,36 @@ fn capture_primary_monitor() -> Result<Vec<u8>, String> {
     Ok(bytes.into_inner())
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn direct_webview_network_arguments(current: &str) -> String {
+    if current
+        .split_whitespace()
+        .any(|argument| argument == "--no-proxy-server")
+    {
+        current.trim().to_string()
+    } else if current.trim().is_empty() {
+        "--no-proxy-server".into()
+    } else {
+        format!("{} --no-proxy-server", current.trim())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn configure_webview_network() {
+    // The realtime renderer only talks to Tencent Chat/TRTC. A stale Windows
+    // loopback proxy would otherwise keep the pet bound but permanently
+    // offline (WebView2 reports ERR_PROXY_CONNECTION_FAILED). Rust-side API
+    // and updater traffic are unaffected by this WebView-only argument.
+    const KEY: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+    let current = std::env::var(KEY).unwrap_or_default();
+    std::env::set_var(KEY, direct_webview_network_arguments(&current));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    configure_webview_network();
+
     let screen_state = ScreenServerState::default();
     let mut builder = tauri::Builder::default()
         .manage(screen_state)
@@ -497,5 +525,23 @@ fn activate_app(app: &tauri::AppHandle) {
         let _ = window.set_focus();
     } else if let Some(window) = app.get_webview_window("main") {
         let _ = window.emit("activate-app", ());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::direct_webview_network_arguments;
+
+    #[test]
+    fn webview_network_bypasses_stale_system_proxy_once() {
+        assert_eq!(direct_webview_network_arguments(""), "--no-proxy-server");
+        assert_eq!(
+            direct_webview_network_arguments("--remote-debugging-port=9222"),
+            "--remote-debugging-port=9222 --no-proxy-server"
+        );
+        assert_eq!(
+            direct_webview_network_arguments("--no-proxy-server"),
+            "--no-proxy-server"
+        );
     }
 }
