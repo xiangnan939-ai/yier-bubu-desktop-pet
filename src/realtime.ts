@@ -44,6 +44,7 @@ export type SignalProcessResult = {
 };
 
 export type ViewSession = { sessionId: string; roomId: number; createdAtMs: number };
+export type ViewErrorPayload = { sessionId: string; message: string };
 export const VIEW_SESSION_KEY = "yier-bubu-view-session";
 
 type SignalHandler = (result: SignalProcessResult, signal: SignedSignal) => void | Promise<void>;
@@ -184,7 +185,7 @@ export class ScreenPublisher {
   private session: ViewSession | null = null;
   private safetyTimer = 0;
 
-  async start(session: ViewSession) {
+  async start(session: ViewSession, onError?: (message: string) => void | Promise<void>) {
     if (this.session?.sessionId === session.sessionId && !this.stopped) return;
     await this.stop();
     this.stopped = false;
@@ -203,7 +204,6 @@ export class ScreenPublisher {
       const track = stream.getVideoTracks()[0];
       if (!track) throw new Error("当前系统无法创建内置画面通道");
       this.track = track;
-      this.drawFrames().catch(() => this.stop());
       const trtc = TRTCClass.create();
       this.trtc = trtc;
       let viewerJoined = false;
@@ -234,6 +234,15 @@ export class ScreenPublisher {
           profile: { width: 1280, height: 720, frameRate: 10, bitrate: 1200 },
           qosPreference: TRTCClass.TYPE.QOS_PREFERENCE_SMOOTH,
         },
+      });
+      this.drawFrames().catch(async (reason) => {
+        const message = reasonText(reason);
+        await this.stop().catch(() => undefined);
+        try {
+          await onError?.(message);
+        } catch {
+          // The local capture has already been stopped; the viewer also has a timeout fallback.
+        }
       });
       window.clearTimeout(this.safetyTimer);
       this.safetyTimer = window.setTimeout(
@@ -318,9 +327,13 @@ export async function startScreenViewer(
   const TRTCClass = await loadTRTC();
   const trtc = TRTCClass.create();
   let playing = false;
+  const availabilityTimer = window.setTimeout(() => {
+    if (!playing) onStatus("连接超时：未收到对方画面，请确认对方电脑已开机且桌宠正在运行");
+  }, 25_000);
   trtc.on(TRTCClass.EVENT.REMOTE_VIDEO_AVAILABLE, async ({ userId, streamType }) => {
     if (userId !== credentials.partnerUserId || playing) return;
     playing = true;
+    window.clearTimeout(availabilityTimer);
     target.querySelector(".viewer-placeholder")?.remove();
     await trtc.startRemoteVideo({ userId, streamType, view: target, option: { fillMode: "contain" } });
     onStatus("已连接 · 双向设备签名认证 · 只读实时画面");
@@ -336,6 +349,7 @@ export async function startScreenViewer(
   });
   onStatus("已进入安全房间，正在等待对方画面…");
   return async () => {
+    window.clearTimeout(availabilityTimer);
     await trtc.exitRoom().catch(() => undefined);
     trtc.destroy();
   };

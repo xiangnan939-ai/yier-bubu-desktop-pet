@@ -646,7 +646,9 @@ impl BindingManager {
                 Ok(response) if response.status().is_success() => {
                     let mut value: RealtimeCredentials =
                         response.json().await.map_err(|error| error.to_string())?;
-                    value.endpoint = endpoint;
+                    // The renderer never needs the EdgeOne access token. Keep it confined to
+                    // this Rust request and only expose the sanitized project origin.
+                    value.endpoint = runtime_api_base(&endpoint).unwrap_or(endpoint);
                     self.write_cached_credentials(&value)?;
                     return Ok(value);
                 }
@@ -737,6 +739,7 @@ impl BindingManager {
         let event = match signal.core.message_type.as_str() {
             "viewRequest" => "view-request",
             "viewStop" => "view-stop",
+            "viewError" => "view-error",
             "unbindRequest" => {
                 let request: SignedUnbindRequest = serde_json::from_value(signal.core.payload)
                     .map_err(|error| error.to_string())?;
@@ -1234,11 +1237,11 @@ async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
                                 if let Some(endpoint) =
                                     validate_runtime_endpoint(&config.endpoint, expected_host)
                                 {
-                                    if let Some(api_base) =
-                                        establish_runtime_session(client, &endpoint).await
-                                    {
-                                        endpoints.push(api_base);
-                                    }
+                                    // Keep the short-lived EdgeOne access parameters on every
+                                    // request. Relying on the protection page's cookies is not
+                                    // portable across HTTP cookie implementations (notably the
+                                    // two Partitioned cookies used by EdgeOne).
+                                    endpoints.push(endpoint);
                                 }
                             }
                         }
@@ -1253,14 +1256,6 @@ async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
         }
     }
     endpoints
-}
-
-async fn establish_runtime_session(client: &reqwest::Client, endpoint: &str) -> Option<String> {
-    let response = client.get(endpoint).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    runtime_api_base(endpoint)
 }
 
 fn runtime_api_base(endpoint: &str) -> Option<String> {

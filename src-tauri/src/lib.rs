@@ -9,7 +9,7 @@ use std::{
 use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{ipc::Response, Emitter, Manager};
+use tauri::{ipc::Response, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use xcap::Monitor;
 
@@ -143,6 +143,22 @@ fn set_screen_share_active(active: bool, state: tauri::State<'_, ScreenServerSta
 #[tauri::command]
 fn capture_screen_frame() -> Result<Response, String> {
     capture_primary_monitor().map(Response::new)
+}
+
+#[tauri::command]
+fn open_viewer_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("viewer") {
+        existing.destroy().map_err(|error| error.to_string())?;
+    }
+    WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("/?mode=viewer".into()))
+        .title("看看TA在干嘛")
+        .inner_size(1_100.0, 720.0)
+        .center()
+        .decorations(true)
+        .transparent(false)
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("无法创建远程画面窗口：{error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -440,6 +456,7 @@ pub fn run() {
             screen_share_active,
             set_screen_share_active,
             capture_screen_frame,
+            open_viewer_window,
             system_audio_playing,
             system_idle_seconds,
             device_status,

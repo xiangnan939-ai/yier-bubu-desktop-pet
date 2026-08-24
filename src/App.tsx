@@ -31,6 +31,7 @@ import {
   realtimeError,
   startScreenViewer,
   type SignedSignal,
+  type ViewErrorPayload,
   type ViewSession,
 } from "./realtime";
 import "./App.css";
@@ -262,6 +263,7 @@ function Viewer() {
     let closeViewer: (() => Promise<void>) | null = null;
     let closing = false;
     let closeListener: (() => void) | null = null;
+    let errorListener: (() => void) | null = null;
     const sendStop = async () => {
       const session = sessionRef.current;
       if (!session) return;
@@ -278,6 +280,11 @@ function Viewer() {
       await sendStop().catch(() => undefined);
       await getCurrentWindow().destroy();
     }).then((dispose) => { closeListener = dispose; }).catch(() => undefined);
+    listen<ViewErrorPayload>("viewer-error", (event) => {
+      if (event.payload.sessionId !== sessionRef.current?.sessionId) return;
+      setStatus(`连接失败：${event.payload.message}`);
+      emitTo("main", "viewer-status", "failed").catch(() => undefined);
+    }).then((dispose) => { errorListener = dispose; }).catch(() => undefined);
     Promise.resolve().then(async () => {
       const session = loadViewSession();
       sessionRef.current = session;
@@ -292,6 +299,7 @@ function Viewer() {
     });
     return () => {
       closeListener?.();
+      errorListener?.();
       closeViewer?.().catch(() => undefined);
       if (!closing) sendStop().catch(() => undefined);
     };
@@ -1047,23 +1055,26 @@ function Pet() {
       await openBindingWindow();
       return;
     }
+    let attemptedSessionId: string | null = null;
     try {
       const messaging = realtimeRef.current;
       if (!messaging) throw new Error("内置联网通道尚未启动");
-      await messaging.connect();
       const session = await createViewSession();
+      attemptedSessionId = session.sessionId;
       localStorage.setItem(VIEW_SESSION_KEY, JSON.stringify(session));
+      await invoke("open_viewer_window");
+      await messaging.connect();
       const signal = await invoke<SignedSignal>("make_realtime_signal", {
         messageType: "viewRequest", payload: session,
       });
-      const existing = await WebviewWindow.getByLabel("viewer");
-      if (existing) await existing.setFocus();
-      else new WebviewWindow("viewer", {
-        url: "/?mode=viewer", title: "看看TA在干嘛",
-        width: 1100, height: 720, center: true, decorations: true, transparent: false,
-      });
       await messaging.send(signal);
     } catch (reason) {
+      if (attemptedSessionId) {
+        await emitTo("viewer", "viewer-error", {
+          sessionId: attemptedSessionId,
+          message: realtimeError(reason),
+        } satisfies ViewErrorPayload).catch(() => undefined);
+      }
       await emitTo("main", "viewer-status", "failed").catch(() => undefined);
       console.error("无法打开远程画面", reason);
     }
@@ -1077,11 +1088,27 @@ function Pet() {
       if (result.event === "view-request") {
         if (!payload || typeof payload.sessionId !== "string" || !Number.isInteger(payload.roomId)
           || typeof payload.createdAtMs !== "number") return;
-        await publisher.start(payload as ViewSession).catch((reason) => {
+        const sessionId = payload.sessionId;
+        const reportError = async (reason: unknown) => {
+          const message = realtimeError(reason);
           console.error("无法启动桌面分享", reason);
-        });
+          const errorSignal = await invoke<SignedSignal>("make_realtime_signal", {
+            messageType: "viewError",
+            payload: { sessionId, message } satisfies ViewErrorPayload,
+          });
+          await messaging.send(errorSignal);
+        };
+        await publisher.start(payload as ViewSession, reportError).catch(reportError);
       } else if (result.event === "view-stop" && publisher.matches(payload?.sessionId)) {
         await publisher.stop();
+      } else if (result.event === "view-error") {
+        const error = signal.core.payload as Partial<ViewErrorPayload> | null;
+        if (typeof error?.sessionId === "string" && typeof error.message === "string") {
+          await emitTo("viewer", "viewer-error", {
+            sessionId: error.sessionId,
+            message: error.message.slice(0, 300),
+          } satisfies ViewErrorPayload).catch(() => undefined);
+        }
       } else if (result.event.startsWith("unbind-")) {
         await emitTo("settings", "binding-changed").catch(() => undefined);
         if (result.event === "unbind-approved" || result.event === "unbind-complete") {
