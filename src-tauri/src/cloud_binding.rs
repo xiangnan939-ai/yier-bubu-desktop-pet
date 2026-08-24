@@ -21,6 +21,7 @@ use uuid::Uuid;
 const KEYRING_SERVICE: &str = "com.yierbubu.desktop-pet";
 const STATE_FILE: &str = "private-binding.json";
 const CREDENTIAL_FILE: &str = "realtime-credentials.json";
+#[cfg(not(target_os = "macos"))]
 const CREDENTIAL_KEYRING_USER: &str = "realtime-credentials";
 const SIGNING_KEY_FILE: &str = "device-signing-key-v1";
 const PAIRING_LIFETIME: Duration = Duration::from_secs(180);
@@ -1152,6 +1153,16 @@ impl BindingManager {
         BASE64.encode(self.signing_key.sign(bytes).to_bytes())
     }
 
+    #[cfg(target_os = "macos")]
+    fn read_cached_credentials(&self) -> Result<Option<RealtimeCredentials>, String> {
+        // Ad-hoc signed private Mac builds receive a different code requirement
+        // after every update. Keychain can then wait indefinitely for access to
+        // this replaceable cache. The permanent device signing key remains in
+        // Keychain; short-lived realtime credentials are fetched when needed.
+        Ok(None)
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn read_cached_credentials(&self) -> Result<Option<RealtimeCredentials>, String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, CREDENTIAL_KEYRING_USER)
             .map_err(|error| error.to_string())?;
@@ -1182,6 +1193,12 @@ impl BindingManager {
         Ok(Some(value))
     }
 
+    #[cfg(target_os = "macos")]
+    fn write_cached_credentials(&self, _value: &RealtimeCredentials) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn write_cached_credentials(&self, value: &RealtimeCredentials) -> Result<(), String> {
         let entry = keyring::Entry::new(KEYRING_SERVICE, CREDENTIAL_KEYRING_USER)
             .map_err(|error| error.to_string())?;
@@ -1192,6 +1209,12 @@ impl BindingManager {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
+    fn clear_cached_credentials(&self) {
+        let _ = fs::remove_file(&self.credential_path);
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn clear_cached_credentials(&self) {
         if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, CREDENTIAL_KEYRING_USER) {
             let _ = entry.delete_credential();
