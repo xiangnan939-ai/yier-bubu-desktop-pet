@@ -288,6 +288,7 @@ pub struct RealtimeCredentials {
     pub partner_user_id: String,
     pub user_sig: String,
     pub expires_at_ms: u64,
+    #[serde(default)]
     pub endpoint: String,
 }
 
@@ -524,7 +525,7 @@ impl BindingManager {
                     continue;
                 }
             };
-            match client.post(url).json(&request).send().await {
+            match post_protected_json(&client, url, &request).await {
                 Ok(response) if response.status().is_success() => {
                     let response: BindingRecoveryResponse =
                         response.json().await.map_err(|error| error.to_string())?;
@@ -588,7 +589,7 @@ impl BindingManager {
                 let Ok(url) = endpoint_request_url(endpoint, "/api/pair") else {
                     continue;
                 };
-                match client.post(url).json(&request).send().await {
+                match post_protected_json(&client, url, &request).await {
                     Ok(response) if response.status().is_success() => {
                         let value: PairExchangeResponse<T> =
                             response.json().await.map_err(|error| error.to_string())?;
@@ -642,10 +643,28 @@ impl BindingManager {
                     continue;
                 }
             };
-            match client.post(url).json(&request).send().await {
+            match post_protected_json(&client, url, &request).await {
                 Ok(response) if response.status().is_success() => {
-                    let mut value: RealtimeCredentials =
-                        response.json().await.map_err(|error| error.to_string())?;
+                    let status = response.status();
+                    let content_type = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let content_encoding = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_ENCODING)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+                    let mut value: RealtimeCredentials = serde_json::from_slice(&bytes).map_err(|error| {
+                        format!(
+                            "联网凭证响应解析失败（状态 {status}，类型 {content_type}，编码 {content_encoding}，{} 字节）：{error}",
+                            bytes.len()
+                        )
+                    })?;
                     // The renderer never needs the EdgeOne access token. Keep it confined to
                     // this Rust request and only expose the sanitized project origin.
                     value.endpoint = runtime_api_base(&endpoint).unwrap_or(endpoint);
@@ -1063,11 +1082,12 @@ impl BindingManager {
                     continue;
                 }
             };
-            match client
-                .post(url)
-                .json(&json!({ "record": record, "approval": approval, "ack": ack }))
-                .send()
-                .await
+            match post_protected_json(
+                &client,
+                url,
+                &json!({ "record": record, "approval": approval, "ack": ack }),
+            )
+            .await
             {
                 Ok(response) if response.status().is_success() => return Ok(()),
                 Ok(response) => errors.push(
@@ -1464,12 +1484,54 @@ fn platform_machine_material() -> Result<String, String> {
 
 fn short_http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .cookie_store(true)
+        // EdgeOne answers token-bearing POST requests with 302. Following that response would
+        // rewrite POST to GET, so protected requests handle the one redirect explicitly.
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))
         .user_agent("yier-bubu-desktop-pet/0.4")
         .build()
         .map_err(|error| error.to_string())
+}
+
+async fn post_protected_json<T: Serialize + ?Sized>(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    body: &T,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let response = client.post(url.clone()).json(body).send().await?;
+    if !response.status().is_redirection() || url.query().is_none() {
+        return Ok(response);
+    }
+    let Some(cookie) = edgeone_cookie_header(response.headers()) else {
+        return Ok(response);
+    };
+    let mut clean_url = url;
+    clean_url.set_query(None);
+    client
+        .post(clean_url)
+        .header(reqwest::header::COOKIE, cookie)
+        .json(body)
+        .send()
+        .await
+}
+
+fn edgeone_cookie_header(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let mut token = None;
+    let mut time = None;
+    for header in headers.get_all(reqwest::header::SET_COOKIE) {
+        let pair = header.to_str().ok()?.split(';').next()?.trim();
+        let (name, value) = pair.split_once('=')?;
+        if value.is_empty() {
+            return None;
+        }
+        match name {
+            "eo_token" if token.is_none() => token = Some(pair.to_string()),
+            "eo_time" if time.is_none() => time = Some(pair.to_string()),
+            _ => {}
+        }
+    }
+    Some(format!("{}; {}", token?, time?))
 }
 
 fn payload_mac<T: Serialize>(key: &[u8], label: &[u8], value: &T) -> Result<String, String> {
@@ -1753,6 +1815,27 @@ mod tests {
             runtime_api_base("https://private.example.edgeone.dev?eo_token=secret&eo_time=123")
                 .as_deref(),
             Some("https://private.example.edgeone.dev")
+        );
+    }
+
+    #[test]
+    fn edgeone_partitioned_cookies_are_forwarded_without_attributes() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.append(
+            reqwest::header::SET_COOKIE,
+            "eo_token=secret; HttpOnly; Path=/; Secure; Partitioned"
+                .parse()
+                .unwrap(),
+        );
+        headers.append(
+            reqwest::header::SET_COOKIE,
+            "eo_time=123; HttpOnly; Path=/; Secure; Partitioned"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            edgeone_cookie_header(&headers).as_deref(),
+            Some("eo_token=secret; eo_time=123")
         );
     }
 
