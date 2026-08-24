@@ -614,7 +614,7 @@ impl BindingManager {
         let record = self.active_record().await?;
         self.ensure_local_machine(&record)?;
         if !force_refresh {
-            if let Some(cached) = self.read_cached_credentials()? {
+            if let Ok(Some(cached)) = self.read_cached_credentials() {
                 if cached.expires_at_ms > now_ms() + 48 * 60 * 60 * 1_000 {
                     return Ok(cached);
                 }
@@ -649,7 +649,9 @@ impl BindingManager {
                     // The renderer never needs the EdgeOne access token. Keep it confined to
                     // this Rust request and only expose the sanitized project origin.
                     value.endpoint = runtime_api_base(&endpoint).unwrap_or(endpoint);
-                    self.write_cached_credentials(&value)?;
+                    // A temporary credential is still safe to use if the OS keyring is
+                    // unavailable. Cache failures must not disable the live connection.
+                    let _ = self.write_cached_credentials(&value);
                     return Ok(value);
                 }
                 Ok(response) => errors.push(
@@ -661,7 +663,7 @@ impl BindingManager {
                 Err(error) => errors.push(error.to_string()),
             }
         }
-        if let Some(cached) = self.read_cached_credentials()? {
+        if let Ok(Some(cached)) = self.read_cached_credentials() {
             if cached.expires_at_ms > now_ms() + 60_000 {
                 return Ok(cached);
             }
