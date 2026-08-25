@@ -262,12 +262,14 @@ function Viewer() {
     getCurrentWindow().onCloseRequested(() => {
       if (closing) return;
       closing = true;
-      // Never hold the native close button hostage to IPC or TRTC cleanup. The
-      // operating system closes the window normally while the main window
-      // sends the stop signal in the background.
+      // Never hold the native close button hostage to IPC or TRTC cleanup.
+      // Some WebView hosts keep a dynamically-created window alive after a
+      // close request listener runs, so explicitly destroy it after queuing the
+      // stop signal.
       if (sessionRef.current) {
         emitTo("main", "viewer-stop-request", sessionRef.current).catch(() => undefined);
       }
+      getCurrentWindow().destroy().catch(() => undefined);
     }).then((dispose) => { closeListener = dispose; }).catch(() => undefined);
     listen<ViewErrorPayload>("viewer-error", (event) => {
       if (event.payload.sessionId !== sessionRef.current?.sessionId) return;

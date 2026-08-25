@@ -60,6 +60,8 @@ export class RealtimeMessaging {
   private chatNamespace: ChatNamespace | null = null;
   private credentials: RealtimeCredentials | null = null;
   private connectPromise: Promise<void> | null = null;
+  private historyPollTimer: number | null = null;
+  private seenSignalNonces = new Set<string>();
   private ready = false;
   private handler: SignalHandler;
 
@@ -113,6 +115,7 @@ export class RealtimeMessaging {
     await this.chat.login({ userID: credentials.userId, userSig: credentials.userSig });
     await readyPromise;
     this.ready = true;
+    this.startHistoryPolling();
   }
 
   private markReady() {
@@ -129,8 +132,12 @@ export class RealtimeMessaging {
   }
 
   private receiveMessages(event: { data?: Message[] }) {
+    this.processMessages(event.data ?? []).catch(() => undefined);
+  }
+
+  private async processMessages(messages: Message[]) {
     const expectedSender = this.credentials?.partnerUserId;
-    for (const message of event.data ?? []) {
+    for (const message of messages) {
       if (!expectedSender || message.from !== expectedSender
         || message.type !== this.chatNamespace?.TYPES.MSG_TEXT) continue;
       let signal: SignedSignal;
@@ -139,11 +146,40 @@ export class RealtimeMessaging {
       } catch {
         continue;
       }
-      invoke<SignalProcessResult>("process_realtime_signal", { signal }).then(async (result) => {
+      if (typeof signal.core?.nonce !== "string" || this.seenSignalNonces.has(signal.core.nonce)) continue;
+      this.seenSignalNonces.add(signal.core.nonce);
+      if (this.seenSignalNonces.size > 200) {
+        const oldest = this.seenSignalNonces.values().next().value;
+        if (oldest) this.seenSignalNonces.delete(oldest);
+      }
+      try {
+        const result = await invoke<SignalProcessResult>("process_realtime_signal", { signal });
         if (result.reply) await this.send(result.reply);
         await this.handler(result, signal);
-      }).catch(() => undefined);
+      } catch {
+        // Expired, duplicate, or invalid messages are intentionally ignored.
+      }
     }
+  }
+
+  private startHistoryPolling() {
+    if (this.historyPollTimer !== null) return;
+    const poll = () => this.pollRecentMessages().catch(() => undefined);
+    poll();
+    // Tencent Chat occasionally records a WebView message without firing its
+    // MESSAGE_RECEIVED callback. Pulling the latest signed messages provides a
+    // low-latency fallback while Rust still verifies sender, binding and nonce.
+    this.historyPollTimer = window.setInterval(poll, 1_500);
+  }
+
+  private async pollRecentMessages() {
+    if (!this.ready || !this.chat || !this.credentials) return;
+    const response = await this.chat.getMessageList({
+      conversationID: `C2C${this.credentials.partnerUserId}`,
+    });
+    const messages = Array.isArray(response?.data?.messageList)
+      ? response.data.messageList as Message[] : [];
+    await this.processMessages(messages);
   }
 
   async send(signal: SignedSignal) {
@@ -158,6 +194,10 @@ export class RealtimeMessaging {
   }
 
   async close() {
+    if (this.historyPollTimer !== null) {
+      window.clearInterval(this.historyPollTimer);
+      this.historyPollTimer = null;
+    }
     if (!this.chat || !this.chatNamespace) return;
     this.chat.off(this.chatNamespace.EVENT.MESSAGE_RECEIVED, this.receiveMessages, this);
     this.chat.off(this.chatNamespace.EVENT.SDK_READY, this.markReady, this);
