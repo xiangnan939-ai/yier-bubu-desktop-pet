@@ -11,10 +11,15 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{ipc::Response, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+#[cfg(not(target_os = "macos"))]
 use xcap::Monitor;
 
 #[cfg(target_os = "macos")]
-use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
+#[allow(deprecated)]
+use objc2_core_graphics::{
+    CGDataProvider, CGDisplayCreateImage, CGImage, CGMainDisplayID, CGPreflightScreenCaptureAccess,
+    CGRequestScreenCaptureAccess,
+};
 
 mod cloud_binding;
 mod updates;
@@ -177,6 +182,20 @@ fn open_viewer_window(app: tauri::AppHandle) -> Result<(), String> {
         .build()
         .map(|_| ())
         .map_err(|error| format!("无法创建远程画面窗口：{error}"))
+}
+
+#[tauri::command]
+fn close_viewer_window(app: tauri::AppHandle, session: Option<Value>) -> Result<(), String> {
+    // The main window owns the long-lived signalling connection. Forward the
+    // stop request to it and destroy the viewer without waiting for the network,
+    // otherwise a stalled TRTC logout can make the native window uncloseable.
+    if let Some(session) = session {
+        let _ = app.emit_to("main", "viewer-stop-request", session);
+    }
+    if let Some(viewer) = app.get_webview_window("viewer") {
+        viewer.destroy().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -403,20 +422,61 @@ fn device_status() -> DeviceStatus {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn capture_macos_display() -> Result<image::RgbaImage, String> {
+    // xcap's macOS snapshot implementation is based on CGWindowListCreateImage.
+    // Recent macOS versions may return only this app's transparent pet window.
+    // Capturing the physical main display directly produces the composited screen.
+    #[allow(deprecated)]
+    let captured = CGDisplayCreateImage(CGMainDisplayID())
+        .ok_or_else(|| "Mac 无法读取主显示器画面，请重新开启录屏权限并重启桌宠".to_string())?;
+    let width = CGImage::width(Some(&captured));
+    let height = CGImage::height(Some(&captured));
+    let bytes_per_row = CGImage::bytes_per_row(Some(&captured));
+    if width == 0 || height == 0 || CGImage::bits_per_pixel(Some(&captured)) != 32 {
+        return Err("Mac 返回了不受支持的屏幕画面格式".to_string());
+    }
+    let provider = CGImage::data_provider(Some(&captured))
+        .ok_or_else(|| "Mac 屏幕画面没有可读取的数据".to_string())?;
+    let data = CGDataProvider::data(Some(&provider))
+        .ok_or_else(|| "Mac 屏幕画面数据读取失败".to_string())?
+        .to_vec();
+    if bytes_per_row < width * 4 || data.len() < bytes_per_row * height {
+        return Err("Mac 屏幕画面数据不完整".to_string());
+    }
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for row in data.chunks_exact(bytes_per_row).take(height) {
+        rgba.extend_from_slice(&row[..width * 4]);
+    }
+    // CGDisplayCreateImage supplies 32-bit little-endian BGRA pixels.
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+        .ok_or_else(|| "Mac 屏幕画面转换失败".to_string())
+}
+
 fn capture_primary_monitor() -> Result<Vec<u8>, String> {
     #[cfg(target_os = "macos")]
-    if !CGPreflightScreenCaptureAccess() {
-        return Err(
-            "Mac 尚未允许桌宠录制屏幕，请在系统设置的隐私与安全性中允许后重新启动桌宠".to_string(),
-        );
-    }
-    let monitors = Monitor::all().map_err(|error| error.to_string())?;
-    let monitor = monitors
-        .iter()
-        .find(|monitor| monitor.is_primary().unwrap_or(false))
-        .or_else(|| monitors.first())
-        .ok_or_else(|| "没有找到可捕获的显示器".to_string())?;
-    let captured = monitor.capture_image().map_err(|error| error.to_string())?;
+    let captured = {
+        if !CGPreflightScreenCaptureAccess() {
+            return Err(
+                "Mac 尚未允许桌宠录制屏幕，请在系统设置的隐私与安全性中允许后重新启动桌宠"
+                    .to_string(),
+            );
+        }
+        capture_macos_display()?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let captured = {
+        let monitors = Monitor::all().map_err(|error| error.to_string())?;
+        let monitor = monitors
+            .iter()
+            .find(|monitor| monitor.is_primary().unwrap_or(false))
+            .or_else(|| monitors.first())
+            .ok_or_else(|| "没有找到可捕获的显示器".to_string())?;
+        monitor.capture_image().map_err(|error| error.to_string())?
+    };
     let image = if captured.width() > MAX_STREAM_WIDTH {
         let height = captured.height() * MAX_STREAM_WIDTH / captured.width();
         image::imageops::resize(
@@ -510,6 +570,7 @@ pub fn run() {
             capture_screen_frame,
             ensure_screen_capture_permission,
             open_viewer_window,
+            close_viewer_window,
             system_audio_playing,
             system_idle_seconds,
             device_status,

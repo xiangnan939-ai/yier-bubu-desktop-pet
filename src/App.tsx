@@ -259,21 +259,12 @@ function Viewer() {
     let closing = false;
     let closeListener: (() => void) | null = null;
     let errorListener: (() => void) | null = null;
-    const sendStop = async () => {
-      const session = sessionRef.current;
-      if (!session) return;
-      const signal = await invoke<SignedSignal>("make_realtime_signal", {
-        messageType: "viewStop", payload: session,
-      });
-      await emitTo("main", "send-realtime-signal", signal);
-    };
     getCurrentWindow().onCloseRequested(async (event) => {
       if (closing) return;
       event.preventDefault();
       closing = true;
-      await closeViewer?.().catch(() => undefined);
-      await sendStop().catch(() => undefined);
-      await getCurrentWindow().destroy();
+      await invoke("close_viewer_window", { session: sessionRef.current }).catch(() =>
+        getCurrentWindow().destroy().catch(() => undefined));
     }).then((dispose) => { closeListener = dispose; }).catch(() => undefined);
     listen<ViewErrorPayload>("viewer-error", (event) => {
       if (event.payload.sessionId !== sessionRef.current?.sessionId) return;
@@ -296,15 +287,19 @@ function Viewer() {
       closeListener?.();
       errorListener?.();
       closeViewer?.().catch(() => undefined);
-      if (!closing) sendStop().catch(() => undefined);
     };
   }, []);
+
+  const endViewing = () => {
+    invoke("close_viewer_window", { session: sessionRef.current }).catch(() =>
+      getCurrentWindow().destroy().catch(() => undefined));
+  };
 
   return (
     <main className="viewer-shell">
       <header>
         <div><strong>一二布布 · 对方桌面</strong><span>{status}</span></div>
-        <button onClick={() => getCurrentWindow().close()}>结束查看</button>
+        <button onClick={endViewing}>结束查看</button>
       </header>
       <section ref={stageRef} className="viewer-stage"><div className="viewer-placeholder">{status}</div></section>
     </main>
@@ -1093,10 +1088,23 @@ function Pet() {
     const signalListener = listen<SignedSignal>("send-realtime-signal", (event) => {
       messaging.send(event.payload).catch((reason) => console.error("联网消息发送失败", reason));
     });
+    const viewerStopListener = listen<ViewSession>("viewer-stop-request", async (event) => {
+      const session = event.payload;
+      if (!session || typeof session.sessionId !== "string") return;
+      try {
+        const signal = await invoke<SignedSignal>("make_realtime_signal", {
+          messageType: "viewStop", payload: session,
+        });
+        await messaging.send(signal);
+      } catch (reason) {
+        console.error("结束查看通知发送失败", reason);
+      }
+    });
     const bindingListener = listen("binding-changed", connectIfBound);
     return () => {
       window.clearInterval(refreshTimer);
       signalListener.then((dispose) => dispose()).catch(() => undefined);
+      viewerStopListener.then((dispose) => dispose()).catch(() => undefined);
       bindingListener.then((dispose) => dispose()).catch(() => undefined);
       publisher.stop().catch(() => undefined);
       messaging.close().catch(() => undefined);
