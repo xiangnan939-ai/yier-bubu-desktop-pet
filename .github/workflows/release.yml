@@ -48,7 +48,7 @@ jobs:
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
           printf '%s' "${MACOS_CODE_SIGN_CERTIFICATE}" \
             | openssl base64 -d -A -out "${CERTIFICATE_PATH}"
-          openssl pkcs12 -in "${CERTIFICATE_PATH}" -clcerts -nokeys \
+          openssl pkcs12 -legacy -in "${CERTIFICATE_PATH}" -clcerts -nokeys \
             -passin env:MACOS_CODE_SIGN_CERTIFICATE_PASSWORD \
             -out "${PUBLIC_CERTIFICATE_PATH}"
           security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"

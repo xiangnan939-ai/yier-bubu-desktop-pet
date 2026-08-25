@@ -336,7 +336,19 @@ export async function startScreenViewer(
     playing = true;
     window.clearTimeout(availabilityTimer);
     target.querySelector(".viewer-placeholder")?.remove();
-    await trtc.startRemoteVideo({ userId, streamType, view: target, option: { fillMode: "contain" } });
+    await trtc.startRemoteVideo({
+      userId,
+      streamType,
+      view: target,
+      option: {
+        fillMode: "contain",
+        // WebView2 can promote a <video> into a native hardware overlay. In a
+        // transparent multi-window desktop app that overlay may cover the
+        // complete client area and appear as a white window. Canvas rendering
+        // keeps the remote frame inside the viewer stage on both platforms.
+        canvasRender: true,
+      },
+    });
     onStatus("已连接 · 双向设备签名认证 · 只读实时画面");
   });
   await trtc.enterRoom({

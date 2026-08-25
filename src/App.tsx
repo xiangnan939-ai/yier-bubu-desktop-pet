@@ -259,12 +259,15 @@ function Viewer() {
     let closing = false;
     let closeListener: (() => void) | null = null;
     let errorListener: (() => void) | null = null;
-    getCurrentWindow().onCloseRequested(async (event) => {
+    getCurrentWindow().onCloseRequested(() => {
       if (closing) return;
-      event.preventDefault();
       closing = true;
-      await invoke("close_viewer_window", { session: sessionRef.current }).catch(() =>
-        getCurrentWindow().destroy().catch(() => undefined));
+      // Never hold the native close button hostage to IPC or TRTC cleanup. The
+      // operating system closes the window normally while the main window
+      // sends the stop signal in the background.
+      if (sessionRef.current) {
+        emitTo("main", "viewer-stop-request", sessionRef.current).catch(() => undefined);
+      }
     }).then((dispose) => { closeListener = dispose; }).catch(() => undefined);
     listen<ViewErrorPayload>("viewer-error", (event) => {
       if (event.payload.sessionId !== sessionRef.current?.sessionId) return;

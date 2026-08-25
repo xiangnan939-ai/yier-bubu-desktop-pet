@@ -91,10 +91,10 @@ button, input { font: inherit; }
 .pairing-code { width: 100%; margin: 2px 0 10px; padding: 13px 8px; border: 1px solid #e7c8c8; border-radius: 11px; color: #a74f5d; background: #fff; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 20px; font-weight: 800; letter-spacing: 1.2px; user-select: all; }
 
 .viewer-shell { width: 100%; height: 100%; display: grid; grid-template-rows: 58px 1fr; background: #171517; color: white; }
-.viewer-shell header { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; background: #242024; border-bottom: 1px solid #3a343a; }
+.viewer-shell header { position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; background: #242024; border-bottom: 1px solid #3a343a; }
 .viewer-shell header div { display: grid; gap: 2px; }
 .viewer-shell header span { color: #b9afb9; font-size: 12px; }
 .viewer-shell header button { border: 0; border-radius: 9px; padding: 8px 13px; background: #d86f7a; color: white; cursor: pointer; }
-.viewer-stage { min-height: 0; display: grid; place-items: center; padding: 10px; overflow: hidden; }
-.viewer-stage video, .viewer-stage > div:not(.viewer-placeholder) { width: 100% !important; height: 100% !important; object-fit: contain; }
+.viewer-stage { position: relative; isolation: isolate; min-height: 0; display: grid; place-items: center; padding: 10px; overflow: hidden; background: #111; }
+.viewer-stage video, .viewer-stage canvas, .viewer-stage > div:not(.viewer-placeholder) { width: 100% !important; height: 100% !important; max-width: 100%; max-height: 100%; object-fit: contain; }
 .viewer-placeholder { color: #aea3ae; }
