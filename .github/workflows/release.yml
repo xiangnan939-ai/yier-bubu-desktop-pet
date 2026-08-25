@@ -43,7 +43,6 @@ jobs:
         run: |
           set -euo pipefail
           CERTIFICATE_PATH="${RUNNER_TEMP}/yier-bubu-code-sign.p12"
-          PUBLIC_CERTIFICATE_PATH="${RUNNER_TEMP}/yier-bubu-code-sign.pem"
           KEYCHAIN_PATH="${RUNNER_TEMP}/yier-bubu-build.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
           printf '%s' "${MACOS_CODE_SIGN_CERTIFICATE}" \
@@ -54,16 +53,11 @@ jobs:
           security import "${CERTIFICATE_PATH}" -k "${KEYCHAIN_PATH}" \
             -P "${MACOS_CODE_SIGN_CERTIFICATE_PASSWORD}" \
             -T /usr/bin/codesign -T /usr/bin/security
-          security find-certificate -c 'Yier Bubu Private Code Signing' -p \
-            "${KEYCHAIN_PATH}" > "${PUBLIC_CERTIFICATE_PATH}"
-          security add-trusted-cert -r trustRoot -p codeSign \
-            -k "${KEYCHAIN_PATH}" "${PUBLIC_CERTIFICATE_PATH}"
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
           security list-keychains -d user -s "${KEYCHAIN_PATH}"
-          sleep 2
-          security find-identity -v -p codesigning "${KEYCHAIN_PATH}" \
-            | grep 'Yier Bubu Private Code Signing'
+          security find-certificate -c 'Yier Bubu Private Code Signing' \
+            "${KEYCHAIN_PATH}" >/dev/null
           echo 'APPLE_SIGNING_IDENTITY=Yier Bubu Private Code Signing' >> "${GITHUB_ENV}"
       - uses: tauri-apps/tauri-action@v0
         env:
