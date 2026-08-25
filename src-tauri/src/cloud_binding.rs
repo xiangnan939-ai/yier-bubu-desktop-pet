@@ -644,44 +644,55 @@ impl BindingManager {
                     continue;
                 }
             };
-            match post_protected_json(&client, url, &request).await {
-                Ok(response) if response.status().is_success() => {
-                    let status = response.status();
-                    let content_type = response
-                        .headers()
-                        .get(reqwest::header::CONTENT_TYPE)
-                        .and_then(|value| value.to_str().ok())
-                        .unwrap_or("")
-                        .to_string();
-                    let content_encoding = response
-                        .headers()
-                        .get(reqwest::header::CONTENT_ENCODING)
-                        .and_then(|value| value.to_str().ok())
-                        .unwrap_or("")
-                        .to_string();
-                    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-                    let mut value: RealtimeCredentials = serde_json::from_slice(&bytes).map_err(|error| {
-                        format!(
-                            "联网凭证响应解析失败（状态 {status}，类型 {content_type}，编码 {content_encoding}，{} 字节）：{error}",
-                            bytes.len()
-                        )
-                    })?;
-                    // The renderer never needs the EdgeOne access token. Keep it confined to
-                    // this Rust request and only expose the sanitized project origin.
-                    value.endpoint = runtime_api_base(&endpoint).unwrap_or(endpoint);
-                    // A temporary credential is still safe to use if the OS keyring is
-                    // unavailable. Cache failures must not disable the live connection.
-                    let _ = self.write_cached_credentials(&value);
-                    return Ok(value);
+            let mut endpoint_error = "凭证服务暂时不可用".to_string();
+            for attempt in 0..3 {
+                match post_protected_json(&client, url.clone(), &request).await {
+                    Ok(response) if response.status().is_success() => {
+                        let status = response.status();
+                        let content_type = response
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        let content_encoding = response
+                            .headers()
+                            .get(reqwest::header::CONTENT_ENCODING)
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or("")
+                            .to_string();
+                        match response.bytes().await {
+                            Ok(bytes) => match serde_json::from_slice::<RealtimeCredentials>(&bytes) {
+                                Ok(mut value) => {
+                                    // The renderer never needs the EdgeOne access token. Keep it confined to
+                                    // this Rust request and only expose the sanitized project origin.
+                                    value.endpoint = runtime_api_base(&endpoint).unwrap_or(endpoint);
+                                    // A temporary credential is still safe to use if the OS keyring is
+                                    // unavailable. Cache failures must not disable the live connection.
+                                    let _ = self.write_cached_credentials(&value);
+                                    return Ok(value);
+                                }
+                                Err(error) => endpoint_error = format!(
+                                    "联网凭证响应解析失败（状态 {status}，类型 {content_type}，编码 {content_encoding}，{} 字节）：{error}",
+                                    bytes.len()
+                                ),
+                            },
+                            Err(error) => endpoint_error = error.to_string(),
+                        }
+                    }
+                    Ok(response) => {
+                        endpoint_error = response
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "凭证服务返回错误".into());
+                    }
+                    Err(error) => endpoint_error = error.to_string(),
                 }
-                Ok(response) => errors.push(
-                    response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "凭证服务返回错误".into()),
-                ),
-                Err(error) => errors.push(error.to_string()),
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(450 * (attempt + 1))).await;
+                }
             }
+            errors.push(endpoint_error);
         }
         if let Ok(Some(cached)) = self.read_cached_credentials() {
             if cached.expires_at_ms > now_ms() + 60_000 {
