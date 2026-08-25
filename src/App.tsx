@@ -1020,7 +1020,29 @@ function Pet() {
       const session = await createViewSession();
       attemptedSessionId = session.sessionId;
       localStorage.setItem(VIEW_SESSION_KEY, JSON.stringify(session));
-      await invoke("open_viewer_window");
+      const existingViewer = await WebviewWindow.getByLabel("viewer");
+      if (existingViewer) await existingViewer.destroy();
+      const viewer = new WebviewWindow("viewer", {
+        url: "/?mode=viewer",
+        title: "看看TA在干嘛",
+        width: 1_100,
+        height: 720,
+        center: true,
+        decorations: true,
+        transparent: false,
+        resizable: true,
+      });
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(resolve, 3_000);
+        viewer.once("tauri://created", () => {
+          window.clearTimeout(timeout);
+          resolve();
+        }).catch(reject);
+        viewer.once<unknown>("tauri://error", (event) => {
+          window.clearTimeout(timeout);
+          reject(new Error(`无法创建远程画面窗口：${realtimeError(event.payload)}`));
+        }).catch(reject);
+      });
       await messaging.connect();
       const signal = await invoke<SignedSignal>("make_realtime_signal", {
         messageType: "viewRequest", payload: session,

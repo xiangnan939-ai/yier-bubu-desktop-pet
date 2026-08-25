@@ -9,7 +9,7 @@ use std::{
 use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{ipc::Response, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{ipc::Response, Emitter, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 #[cfg(not(target_os = "macos"))]
 use xcap::Monitor;
@@ -166,25 +166,6 @@ fn ensure_screen_capture_permission() -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     Ok(())
-}
-
-#[tauri::command]
-fn open_viewer_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window("viewer") {
-        existing.destroy().map_err(|error| error.to_string())?;
-    }
-    // Load the real bundled entry point. A query-only App URL can leave a
-    // newly-created WebView2 window at about:blank on Windows; the frontend
-    // also identifies this window by its stable Tauri label.
-    WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("index.html".into()))
-        .title("看看TA在干嘛")
-        .inner_size(1_100.0, 720.0)
-        .center()
-        .decorations(true)
-        .transparent(false)
-        .build()
-        .map(|_| ())
-        .map_err(|error| format!("无法创建远程画面窗口：{error}"))
 }
 
 #[tauri::command]
@@ -572,7 +553,6 @@ pub fn run() {
             set_screen_share_active,
             capture_screen_frame,
             ensure_screen_capture_permission,
-            open_viewer_window,
             close_viewer_window,
             system_audio_playing,
             system_idle_seconds,
