@@ -85,6 +85,7 @@ export class RealtimeMessaging {
     const credentials = await invoke<RealtimeCredentials>("realtime_credentials", { forceRefresh });
     if (this.chat && (this.credentials?.userId !== credentials.userId || forceRefresh)) {
       this.chat.off(TencentCloudChat.EVENT.MESSAGE_RECEIVED, this.receiveMessages, this);
+      this.chat.off(TencentCloudChat.EVENT.CONVERSATION_LIST_UPDATED, this.conversationUpdated, this);
       this.chat.off(TencentCloudChat.EVENT.SDK_READY, this.markReady, this);
       this.chat.off(TencentCloudChat.EVENT.SDK_NOT_READY, this.markNotReady, this);
       this.chat.off(TencentCloudChat.EVENT.KICKED_OUT, this.reconnect, this);
@@ -96,6 +97,7 @@ export class RealtimeMessaging {
     if (!this.chat) {
       this.chat = TencentCloudChat.create({ SDKAppID: credentials.sdkAppId });
       this.chat.on(TencentCloudChat.EVENT.MESSAGE_RECEIVED, this.receiveMessages, this);
+      this.chat.on(TencentCloudChat.EVENT.CONVERSATION_LIST_UPDATED, this.conversationUpdated, this);
       this.chat.on(TencentCloudChat.EVENT.SDK_READY, this.markReady, this);
       this.chat.on(TencentCloudChat.EVENT.SDK_NOT_READY, this.markNotReady, this);
       this.chat.on(TencentCloudChat.EVENT.KICKED_OUT, this.reconnect, this);
@@ -135,6 +137,10 @@ export class RealtimeMessaging {
     this.processMessages(event.data ?? []).catch(() => undefined);
   }
 
+  private conversationUpdated() {
+    this.pollRecentMessages().catch(() => undefined);
+  }
+
   private async processMessages(messages: Message[]) {
     const expectedSender = this.credentials?.partnerUserId;
     for (const message of messages) {
@@ -169,7 +175,7 @@ export class RealtimeMessaging {
     // Tencent Chat occasionally records a WebView message without firing its
     // MESSAGE_RECEIVED callback. Pulling the latest signed messages provides a
     // low-latency fallback while Rust still verifies sender, binding and nonce.
-    this.historyPollTimer = window.setInterval(poll, 1_500);
+    this.historyPollTimer = window.setInterval(poll, 10_000);
   }
 
   private async pollRecentMessages() {
@@ -200,6 +206,7 @@ export class RealtimeMessaging {
     }
     if (!this.chat || !this.chatNamespace) return;
     this.chat.off(this.chatNamespace.EVENT.MESSAGE_RECEIVED, this.receiveMessages, this);
+    this.chat.off(this.chatNamespace.EVENT.CONVERSATION_LIST_UPDATED, this.conversationUpdated, this);
     this.chat.off(this.chatNamespace.EVENT.SDK_READY, this.markReady, this);
     this.chat.off(this.chatNamespace.EVENT.SDK_NOT_READY, this.markNotReady, this);
     this.chat.off(this.chatNamespace.EVENT.KICKED_OUT, this.reconnect, this);

@@ -169,13 +169,9 @@ fn ensure_screen_capture_permission() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn close_viewer_window(app: tauri::AppHandle, session: Option<Value>) -> Result<(), String> {
-    // The main window owns the long-lived signalling connection. Forward the
-    // stop request to it and destroy the viewer without waiting for the network,
-    // otherwise a stalled TRTC logout can make the native window uncloseable.
-    if let Some(session) = session {
-        let _ = app.emit_to("main", "viewer-stop-request", session);
-    }
+fn close_viewer_window(app: tauri::AppHandle, _session: Option<Value>) -> Result<(), String> {
+    // Destroy immediately. The main window observes `tauri://destroyed` and
+    // sends the stop signal without intercepting the native close request.
     if let Some(viewer) = app.get_webview_window("viewer") {
         viewer.destroy().map_err(|error| error.to_string())?;
     }

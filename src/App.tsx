@@ -256,21 +256,7 @@ function Viewer() {
 
   useEffect(() => {
     let closeViewer: (() => Promise<void>) | null = null;
-    let closing = false;
-    let closeListener: (() => void) | null = null;
     let errorListener: (() => void) | null = null;
-    getCurrentWindow().onCloseRequested(() => {
-      if (closing) return;
-      closing = true;
-      // Never hold the native close button hostage to IPC or TRTC cleanup.
-      // Some WebView hosts keep a dynamically-created window alive after a
-      // close request listener runs, so explicitly destroy it after queuing the
-      // stop signal.
-      if (sessionRef.current) {
-        emitTo("main", "viewer-stop-request", sessionRef.current).catch(() => undefined);
-      }
-      getCurrentWindow().destroy().catch(() => undefined);
-    }).then((dispose) => { closeListener = dispose; }).catch(() => undefined);
     listen<ViewErrorPayload>("viewer-error", (event) => {
       if (event.payload.sessionId !== sessionRef.current?.sessionId) return;
       setStatus(`连接失败：${event.payload.message}`);
@@ -289,7 +275,6 @@ function Viewer() {
       emitTo("main", "viewer-status", "failed").catch(() => undefined);
     });
     return () => {
-      closeListener?.();
       errorListener?.();
       closeViewer?.().catch(() => undefined);
     };
@@ -1034,6 +1019,9 @@ function Pet() {
         transparent: false,
         resizable: true,
       });
+      viewer.once("tauri://destroyed", () => {
+        emitTo("main", "viewer-stop-request", session).catch(() => undefined);
+      }).catch(() => undefined);
       await new Promise<void>((resolve, reject) => {
         const timeout = window.setTimeout(resolve, 3_000);
         viewer.once("tauri://created", () => {
