@@ -1257,7 +1257,8 @@ function PetGate() {
 }
 
 export default function App() {
-  const mode = new URLSearchParams(window.location.search).get("mode");
+  const requestedMode = new URLSearchParams(window.location.search).get("mode");
+  const mode = requestedMode ?? (getCurrentWindow().label === "viewer" ? "viewer" : null);
   if (mode === "viewer") return <Viewer />;
   if (mode === "binding") return <BindingSetup />;
   if (mode === "settings") return <Settings />;

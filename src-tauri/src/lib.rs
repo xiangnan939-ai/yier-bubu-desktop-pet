@@ -173,7 +173,10 @@ fn open_viewer_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("viewer") {
         existing.destroy().map_err(|error| error.to_string())?;
     }
-    WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("/?mode=viewer".into()))
+    // Load the real bundled entry point. A query-only App URL can leave a
+    // newly-created WebView2 window at about:blank on Windows; the frontend
+    // also identifies this window by its stable Tauri label.
+    WebviewWindowBuilder::new(&app, "viewer", WebviewUrl::App("index.html".into()))
         .title("看看TA在干嘛")
         .inner_size(1_100.0, 720.0)
         .center()
