@@ -1,6 +1,6 @@
 [package]
 name = "yier-bubu-desktop-pet"
-version = "0.5.7"
+version = "0.5.8"
 description = "一二与布布的双人私人桌宠"
 authors = ["一二与布布"]
 edition = "2021"
@@ -45,7 +45,7 @@ battery = "0.7.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-audio = { version = "0.3.2", default-features = false, features = ["AudioHardware"] }
-objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGEventSource", "CGEventTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGEventSource", "CGEventTypes", "CGWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSProcessInfo"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]

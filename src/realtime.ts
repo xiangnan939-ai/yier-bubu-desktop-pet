@@ -190,8 +190,9 @@ export class ScreenPublisher {
     await this.stop();
     this.stopped = false;
     this.session = session;
-    await invoke("set_screen_share_active", { active: true });
     try {
+      await invoke("ensure_screen_capture_permission");
+      await invoke("set_screen_share_active", { active: true });
       const credentials = await invoke<RealtimeCredentials>("realtime_credentials", { forceRefresh: false });
       const TRTCClass = await loadTRTC();
       const canvas = document.createElement("canvas");

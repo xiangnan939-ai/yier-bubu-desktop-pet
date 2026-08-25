@@ -72,11 +72,6 @@ type AppUpdateCheck = {
   version: string | null;
   notes: string | null;
 };
-type AssetUpdateResult = {
-  status: "unconfigured" | "upToDate" | "requiresAppUpdate" | "updated";
-  version: string | null;
-  message: string;
-};
 type UpdateProgress = {
   updateType: "app" | "assets";
   phase: "downloading" | "installing" | "complete";
@@ -437,9 +432,7 @@ function Settings() {
   const [binding, setBinding] = useState<BindingStatus | null>(null);
   const [bindingMessage, setBindingMessage] = useState("正在读取绑定状态…");
   const [bindingBusy, setBindingBusy] = useState(false);
-  const [profile, setProfile] = useState(fallbackProfile);
   const [updateConfig, setUpdateConfig] = useState<UpdateConfiguration | null>(null);
-  const [assetVersion, setAssetVersion] = useState<string | null>(null);
   const [appUpdate, setAppUpdate] = useState<AppUpdateCheck | null>(null);
   const [updateMessage, setUpdateMessage] = useState("正在读取更新状态…");
   const [checkingUpdates, setCheckingUpdates] = useState(false);
@@ -447,21 +440,17 @@ function Settings() {
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
 
   useEffect(() => {
-    invoke<AppProfile>("app_profile").then((value) => {
-      setProfile(value);
-      return invoke<InstalledAssetPack>("installed_asset_pack", { role: value.role });
-    }).then((pack) => setAssetVersion(pack.version)).catch(() => undefined);
     invoke<UpdateConfiguration>("update_configuration").then((value) => {
       setUpdateConfig(value);
-      if (!value.appUpdateEnabled && !value.assetUpdateEnabled) {
+      if (!value.appUpdateEnabled) {
         setUpdateMessage("发布地址尚未配置；当前安装包仍可正常离线使用。");
       } else {
-        setUpdateMessage("启动后每 6 小时自动检查，也可以立即检查。");
+        setUpdateMessage("点击检查更新。");
       }
     }).catch((reason) => setUpdateMessage(String(reason)));
     invoke<BindingStatus>("binding_status").then((value) => {
       setBinding(value);
-      setBindingMessage(value.state === "bound" ? `已与${value.partnerName}安全绑定` : "尚未完成双机绑定");
+      setBindingMessage(value.state === "bound" ? "" : "尚未完成双机绑定");
     }).catch((reason) => setBindingMessage(String(reason)));
   }, []);
 
@@ -485,56 +474,39 @@ function Settings() {
   }, []);
 
   const checkUpdates = async () => {
-    if (!updateConfig || checkingUpdates) return;
+    if (!updateConfig?.appUpdateEnabled || checkingUpdates || installingApp) return;
     setCheckingUpdates(true);
     setUpdateProgress(null);
     setError("");
-    const messages: string[] = [];
+    setUpdateMessage("正在检查更新…");
     try {
-      if (updateConfig.assetUpdateEnabled) {
-        const result = await invoke<AssetUpdateResult>("check_and_install_asset_update");
-        messages.push(result.message);
-        if (result.version) setAssetVersion(result.version);
-        if (result.status === "updated") {
-          await emitTo("main", "asset-pack-updated").catch(() => undefined);
-        }
+      const result = await invoke<AppUpdateCheck>("check_app_update");
+      setAppUpdate(result);
+      if (!result.available) {
+        setUpdateMessage("已是最新版");
+        return;
       }
-      if (updateConfig.appUpdateEnabled) {
-        const result = await invoke<AppUpdateCheck>("check_app_update");
-        setAppUpdate(result);
-        messages.push(result.available ? `发现程序新版本 ${result.version}` : "程序已是最新版");
-      }
-      setUpdateMessage(messages.length ? messages.join("；") : "发布地址尚未配置");
+      setCheckingUpdates(false);
+      setInstallingApp(true);
+      setUpdateMessage(`发现新版本 ${result.version ?? ""}，正在下载并安装…`);
+      await invoke("install_app_update");
+      setUpdateMessage("更新安装完成，正在重新启动…");
+      await relaunch();
     } catch (reason) {
-      setUpdateMessage(`检查更新失败：${String(reason)}`);
+      setUpdateMessage(`更新失败：${String(reason)}`);
       setUpdateProgress(null);
+      setInstallingApp(false);
     } finally {
       setCheckingUpdates(false);
     }
   };
 
-  const installProgramUpdate = async () => {
-    if (installingApp) return;
-    setInstallingApp(true);
-    setUpdateProgress(null);
-    setUpdateMessage("正在下载并验证程序更新，请不要关闭软件…");
-    try {
-      await invoke("install_app_update");
-      setUpdateMessage("更新安装完成，正在重新启动…");
-      await relaunch();
-    } catch (reason) {
-      setUpdateMessage(`程序更新失败：${String(reason)}`);
-      setUpdateProgress(null);
-      setInstallingApp(false);
-    }
-  };
-
-  const save = async () => {
-    const size = clampPetSize(petSize);
+  const applyPetSize = (value: number) => {
+    const size = clampPetSize(value);
+    setPetSize(size);
     localStorage.setItem("petSize", String(size));
-    await resizeMainPet(size).catch(() => undefined);
-    await emitTo("main", "settings-updated", { petSize: size }).catch(() => undefined);
-    await getCurrentWindow().close();
+    resizeMainPet(size).catch(() => undefined);
+    emitTo("main", "settings-updated", { petSize: size }).catch(() => undefined);
   };
 
   const sendUnbindRequest = async () => {
@@ -576,17 +548,16 @@ function Settings() {
       <section className="settings-section">
         <div className="setting-heading"><h2>桌宠大小</h2><strong>{petSize}px</strong></div>
         <input aria-label="桌宠大小" type="range" min={MIN_PET_SIZE} max={MAX_PET_SIZE} step="8"
-          value={petSize} onChange={(event) => setPetSize(Number(event.target.value))} />
+          value={petSize} onChange={(event) => applyPetSize(Number(event.target.value))} />
         <div className="range-labels"><span>较小</span><span>默认 160px</span><span>较大</span></div>
       </section>
 
       <section className="settings-section update-section">
-        <div className="setting-heading"><h2>联网更新</h2><strong>程序 {updateConfig?.currentVersion ?? "…"}</strong></div>
+        <div className="setting-heading"><h2>更新</h2><strong>版本 {updateConfig?.currentVersion ?? "…"}</strong></div>
         <p>{updateMessage}</p>
         {updateProgress && <div className="update-progress" aria-live="polite">
           <div className="update-progress-label">
-            <span>{updateProgress.updateType === "app" ? "程序更新" : "动作素材"} · {
-              updateProgress.phase === "downloading" ? "正在下载"
+            <span>更新 · {updateProgress.phase === "downloading" ? "正在下载"
                 : updateProgress.phase === "installing" ? "正在验证并安装" : "更新完成"
             }</span>
             <strong>{updateProgress.phase === "downloading" && updateProgress.totalBytes
@@ -604,18 +575,11 @@ function Settings() {
             {updateProgress.totalBytes ? ` / ${formatBytes(updateProgress.totalBytes)}` : ""}
           </small>}
         </div>}
-        <div className="update-meta">
-          <span>{profile.petName}素材：{assetVersion ?? "安装包内置版"}</span>
-          <span>校验：HTTPS + 数字签名</span>
-        </div>
         {appUpdate?.notes && <p className="update-notes">{appUpdate.notes}</p>}
         <div className="update-actions">
-          <button disabled={checkingUpdates || installingApp || !updateConfig
-            || (!updateConfig.appUpdateEnabled && !updateConfig.assetUpdateEnabled)} onClick={checkUpdates}>
-            {checkingUpdates ? "正在检查…" : "立即检查更新"}
+          <button disabled={checkingUpdates || installingApp || !updateConfig?.appUpdateEnabled} onClick={checkUpdates}>
+            {installingApp ? "正在更新…" : checkingUpdates ? "正在检查…" : "检查更新"}
           </button>
-          {appUpdate?.available && <button className="primary" disabled={installingApp}
-            onClick={installProgramUpdate}>{installingApp ? "正在更新…" : "更新并重启"}</button>}
         </div>
       </section>
 
@@ -628,10 +592,7 @@ function Settings() {
           {binding?.partnerMachineCode && <span>对方机器校验码：{binding.partnerMachineCode}</span>}
           {binding?.createdAtMs && <span>绑定时间：{new Date(binding.createdAtMs).toLocaleString()}</span>}
         </div>
-        <p>{bindingMessage}</p>
-        <p className="connection-note">{binding?.realtimeConfigured
-          ? "连接、设备签名和屏幕通道均已内置，不需要额外安装软件。"
-          : "当前是未写入联网服务地址的开发构建；请安装正式发布版。"}</p>
+        {bindingMessage && <p>{bindingMessage}</p>}
         {binding?.localPublicKey && <details className="device-public-key">
           <summary>开发者：本机设备公钥</summary><code>{binding.localPublicKey}</code>
         </details>}
@@ -653,7 +614,7 @@ function Settings() {
       </section>
 
       {error && <p className="settings-error">{error}</p>}
-      <footer><button onClick={() => getCurrentWindow().close()}>取消</button><button className="primary" onClick={save}>保存</button></footer>
+      <footer><button className="primary" onClick={() => getCurrentWindow().close()}>关闭</button></footer>
     </main>
   );
 }
@@ -678,7 +639,7 @@ function PetMenu() {
   return (
     <main className="menu-window-shell">
       <nav className="pet-menu">
-        <button className="remote-action" onClick={() => choose("viewer")}>看看TA在干嘛</button>
+        <button onClick={() => choose("viewer")}>看看TA在干嘛</button>
         <button onClick={() => choose("settings")}>设置</button>
       </nav>
     </main>
@@ -834,6 +795,9 @@ function Pet() {
 
   useEffect(() => {
     invoke<AppProfile>("app_profile").then(setProfile).catch(() => undefined);
+    invoke("ensure_screen_capture_permission").catch((reason) => {
+      console.warn("屏幕录制权限尚未准备好", reason);
+    });
     localStorage.removeItem("pairing");
     const size = loadPetSize();
     setPetSize(size);
@@ -864,10 +828,6 @@ function Pet() {
     const check = async () => {
       const config = await invoke<UpdateConfiguration>("update_configuration").catch(() => null);
       if (!config || stopped) return;
-      if (config.assetUpdateEnabled) {
-        const result = await invoke<AssetUpdateResult>("check_and_install_asset_update").catch(() => null);
-        if (result?.status === "updated" && !stopped) await loadInstalledPack(true).catch(() => undefined);
-      }
       if (config.appUpdateEnabled && !stopped) {
         const result = await invoke<AppUpdateCheck>("check_app_update").catch(() => null);
         if (result) localStorage.setItem("lastAppUpdateCheck", JSON.stringify(result));
@@ -880,7 +840,7 @@ function Pet() {
       window.clearTimeout(initial);
       window.clearInterval(interval);
     };
-  }, [loadInstalledPack]);
+  }, []);
 
   useEffect(() => {
     setMirrored(false);

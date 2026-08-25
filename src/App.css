@@ -26,8 +26,6 @@ button, input { font: inherit; }
 }
 .pet-menu button { border: 0; border-radius: 8px; padding: 9px 10px; color: #51352b; background: transparent; text-align: left; cursor: pointer; font-size: 12px; }
 .pet-menu button:hover { background: #f5e6dc; }
-.pet-menu .remote-action { color: #fff; background: linear-gradient(135deg, #ef8c91, #db6f7d); font-weight: 700; }
-.pet-menu .remote-action:hover { background: linear-gradient(135deg, #e77d84, #cf6472); }
 
 .settings-shell { width: 100%; min-height: 100%; padding: 24px; overflow: auto; background: #fffaf6; color: #4a3028; user-select: text; }
 .settings-shell header { margin-bottom: 18px; }

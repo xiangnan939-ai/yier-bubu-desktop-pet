@@ -307,6 +307,19 @@ pub fn installed_asset_pack(app: AppHandle, role: String) -> Result<InstalledAss
             rules: None,
         });
     }
+    // Program and character actions are released as one version. Never let a
+    // leftover hot pack from an older program override the assets bundled in
+    // the newly installed application.
+    if manifest
+        .as_ref()
+        .is_some_and(|value| value.version != env!("CARGO_PKG_VERSION"))
+    {
+        return Ok(InstalledAssetPack {
+            version: None,
+            assets: Vec::new(),
+            rules: None,
+        });
+    }
 
     let role_folder = match role.as_str() {
         "yier" => "一二",

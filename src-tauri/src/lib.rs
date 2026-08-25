@@ -13,6 +13,9 @@ use tauri::{ipc::Response, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use xcap::Monitor;
 
+#[cfg(target_os = "macos")]
+use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
+
 mod cloud_binding;
 mod updates;
 
@@ -143,6 +146,21 @@ fn set_screen_share_active(active: bool, state: tauri::State<'_, ScreenServerSta
 #[tauri::command]
 fn capture_screen_frame() -> Result<Response, String> {
     capture_primary_monitor().map(Response::new)
+}
+
+#[tauri::command]
+fn ensure_screen_capture_permission() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() {
+            return Ok(());
+        }
+        return Err(
+            "Mac 尚未允许桌宠录制屏幕，请在系统设置的隐私与安全性中允许后重新启动桌宠".to_string(),
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(())
 }
 
 #[tauri::command]
@@ -386,6 +404,12 @@ fn device_status() -> DeviceStatus {
 }
 
 fn capture_primary_monitor() -> Result<Vec<u8>, String> {
+    #[cfg(target_os = "macos")]
+    if !CGPreflightScreenCaptureAccess() {
+        return Err(
+            "Mac 尚未允许桌宠录制屏幕，请在系统设置的隐私与安全性中允许后重新启动桌宠".to_string(),
+        );
+    }
     let monitors = Monitor::all().map_err(|error| error.to_string())?;
     let monitor = monitors
         .iter()
@@ -484,6 +508,7 @@ pub fn run() {
             screen_share_active,
             set_screen_share_active,
             capture_screen_frame,
+            ensure_screen_capture_permission,
             open_viewer_window,
             system_audio_playing,
             system_idle_seconds,
