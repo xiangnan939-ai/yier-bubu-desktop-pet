@@ -1494,10 +1494,29 @@ fn platform_machine_material() -> Result<String, String> {
 
 #[cfg(target_os = "windows")]
 fn platform_machine_material() -> Result<String, String> {
-    let output = std::process::Command::new("powershell")
+    use std::os::windows::process::CommandExt;
+    use std::sync::OnceLock;
+
+    // Reading the hardware UUID is needed by several binding checks. Keep the
+    // first successful value for this process so normal pet actions do not
+    // repeatedly launch a system helper.
+    static MACHINE_MATERIAL: OnceLock<String> = OnceLock::new();
+    if let Some(value) = MACHINE_MATERIAL.get() {
+        return Ok(value.clone());
+    }
+
+    // PowerShell is a console application. Without CREATE_NO_WINDOW Windows
+    // briefly shows a cmd-style window whenever a binding check runs.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut command = std::process::Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
         .args([
+            "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
             "-Command",
             "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
         ])
@@ -1507,6 +1526,7 @@ fn platform_machine_material() -> Result<String, String> {
     if value.is_empty() {
         Err("无法读取 Windows 机器特征".into())
     } else {
+        let _ = MACHINE_MATERIAL.set(value.clone());
         Ok(value)
     }
 }
