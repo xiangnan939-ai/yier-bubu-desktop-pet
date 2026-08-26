@@ -1,15 +1,3 @@
 {
-  "sleepAfterSeconds": 600,
-  "ambientWeights": {
-    "walk": 24,
-    "look": 25,
-    "sit": 18,
-    "idle": 33
-  },
-  "drinkMinMinutes": 45,
-  "drinkMaxMinutes": 75,
-  "eatMinMinutes": 120,
-  "eatMaxMinutes": 180,
-  "workMinMinutes": 3,
-  "workMaxMinutes": 5
+  "walkChance": 0.24
 }

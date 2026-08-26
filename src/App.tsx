@@ -11,15 +11,16 @@ import {
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  DEFAULT_AMBIENT_WEIGHTS,
-  chooseAmbientAction,
-  type AmbientWeights,
+  DEFAULT_WALK_CHANCE,
+  shouldStartWalk,
 } from "./actionPolicy";
 import {
   buildPetLibrary,
   chooseAction,
+  chooseRandomActionAsset,
   getGifDuration,
   type HotPetAsset,
+  type PetAsset,
   type PetRole,
 } from "./petAssets";
 import {
@@ -44,7 +45,6 @@ type AppProfile = {
   platform: string;
 };
 
-type DeviceStatus = { batteryPercentage: number | null; charging: boolean; hot: boolean };
 type BindingStatus = {
   state: "unbound" | "bound" | "revoking" | "revoked";
   petName: string;
@@ -85,25 +85,11 @@ type InstalledAssetPack = {
 };
 
 type ActionRules = {
-  sleepAfterSeconds: number;
-  ambientWeights: AmbientWeights;
-  drinkMinMinutes: number;
-  drinkMaxMinutes: number;
-  eatMinMinutes: number;
-  eatMaxMinutes: number;
-  workMinMinutes: number;
-  workMaxMinutes: number;
+  walkChance: number;
 };
 
 const DEFAULT_ACTION_RULES: ActionRules = {
-  sleepAfterSeconds: 10 * 60,
-  ambientWeights: DEFAULT_AMBIENT_WEIGHTS,
-  drinkMinMinutes: 45,
-  drinkMaxMinutes: 75,
-  eatMinMinutes: 120,
-  eatMaxMinutes: 180,
-  workMinMinutes: 3,
-  workMaxMinutes: 5,
+  walkChance: DEFAULT_WALK_CHANCE,
 };
 
 function formatBytes(value: number) {
@@ -122,25 +108,13 @@ function normalizeActionRules(value: unknown): ActionRules {
   const rules = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const weights = rules.ambientWeights && typeof rules.ambientWeights === "object"
     ? rules.ambientWeights as Record<string, unknown> : {};
-  const next = {
-    sleepAfterSeconds: safeNumber(rules.sleepAfterSeconds, DEFAULT_ACTION_RULES.sleepAfterSeconds, 60, 86_400),
-    ambientWeights: {
-      walk: safeNumber(weights.walk, DEFAULT_AMBIENT_WEIGHTS.walk, 0, 100),
-      look: safeNumber(weights.look, DEFAULT_AMBIENT_WEIGHTS.look, 0, 100),
-      sit: safeNumber(weights.sit, DEFAULT_AMBIENT_WEIGHTS.sit, 0, 100),
-      idle: safeNumber(weights.idle, DEFAULT_AMBIENT_WEIGHTS.idle, 0, 100),
-    },
-    drinkMinMinutes: safeNumber(rules.drinkMinMinutes, DEFAULT_ACTION_RULES.drinkMinMinutes, 5, 720),
-    drinkMaxMinutes: safeNumber(rules.drinkMaxMinutes, DEFAULT_ACTION_RULES.drinkMaxMinutes, 5, 720),
-    eatMinMinutes: safeNumber(rules.eatMinMinutes, DEFAULT_ACTION_RULES.eatMinMinutes, 15, 1_440),
-    eatMaxMinutes: safeNumber(rules.eatMaxMinutes, DEFAULT_ACTION_RULES.eatMaxMinutes, 15, 1_440),
-    workMinMinutes: safeNumber(rules.workMinMinutes, DEFAULT_ACTION_RULES.workMinMinutes, 1, 120),
-    workMaxMinutes: safeNumber(rules.workMaxMinutes, DEFAULT_ACTION_RULES.workMaxMinutes, 1, 120),
-  };
-  next.drinkMaxMinutes = Math.max(next.drinkMinMinutes, next.drinkMaxMinutes);
-  next.eatMaxMinutes = Math.max(next.eatMinMinutes, next.eatMaxMinutes);
-  next.workMaxMinutes = Math.max(next.workMinMinutes, next.workMaxMinutes);
-  return next;
+  const legacyWalk = safeNumber(weights.walk, 24, 0, 100);
+  const legacyTotal = legacyWalk
+    + safeNumber(weights.look, 25, 0, 100)
+    + safeNumber(weights.sit, 18, 0, 100)
+    + safeNumber(weights.idle, 33, 0, 100);
+  const legacyChance = legacyWalk / Math.max(1, legacyTotal);
+  return { walkChance: safeNumber(rules.walkChance, legacyChance, 0, 1) };
 }
 
 function hotAssetsFromPack(pack: InstalledAssetPack): HotPetAsset[] {
@@ -648,12 +622,6 @@ function Pet() {
   const [assetKey, setAssetKey] = useState(0);
   const [isSharing, setIsSharing] = useState(false);
   const [musicPlaying, setMusicPlaying] = useState(false);
-  const [systemSleeping, setSystemSleeping] = useState(false);
-  const [deviceStatus, setDeviceStatus] = useState<DeviceStatus>({
-    batteryPercentage: null,
-    charging: false,
-    hot: false,
-  });
   const [petSize, setPetSize] = useState(loadPetSize);
   const [mirrored, setMirrored] = useState(false);
   const actionRef = useRef("idle");
@@ -661,37 +629,41 @@ function Pet() {
   const interactionActive = useRef(false);
   const movementVersion = useRef(0);
   const musicPlayingRef = useRef(false);
-  const sharingRef = useRef(false);
-  const sleepingRef = useRef(false);
-  const lowBatteryRef = useRef(false);
-  const chargingRef = useRef(false);
-  const hotRef = useRef(false);
   const actionEndsAt = useRef(0);
-  const workActiveRef = useRef(false);
-  const workDueAt = useRef(Date.now() + 60_000);
-  const incomingSharingRef = useRef(false);
+  const actionDisplayVersion = useRef(0);
   const realtimeRef = useRef<RealtimeMessaging | null>(null);
   const publisherRef = useRef<ScreenPublisher | null>(null);
-  const clickTimesRef = useRef<number[]>([]);
-  const drinkDueAt = useRef(Date.now() + DEFAULT_ACTION_RULES.drinkMinMinutes * 60_000);
-  const eatDueAt = useRef(Date.now() + DEFAULT_ACTION_RULES.eatMinMinutes * 60_000);
 
-  const showAction = useCallback(async (requested: string, restart = true) => {
-    const semanticFallback: Record<string, string> = { drag: "click", drop: "idle", shared: "watching" };
-    const fallback = semanticFallback[requested] ?? "idle";
-    const resolved = library.has(requested) ? requested : library.has(fallback) ? fallback : "idle";
-    if (!restart && actionRef.current === resolved) return 0;
-    const selected = chooseAction(library, resolved);
-    if (!selected) return 0;
-
-    actionRef.current = resolved;
-    setAction(resolved);
+  const showSelectedAction = useCallback(async (
+    nextAction: string,
+    selected: PetAsset,
+  ) => {
+    const displayVersion = ++actionDisplayVersion.current;
+    actionRef.current = nextAction;
+    setAction(nextAction);
     setAsset(selected.url);
     setAssetKey((value) => value + 1);
     const duration = Math.max(600, await getGifDuration(selected.url));
-    actionEndsAt.current = Date.now() + duration;
+    if (actionDisplayVersion.current === displayVersion) {
+      actionEndsAt.current = Date.now() + duration;
+    }
     return duration;
-  }, [library]);
+  }, []);
+
+  const showAction = useCallback(async (requested: string) => {
+    const semanticFallback: Record<string, string> = { drag: "click", drop: "idle", shared: "watching" };
+    const fallback = semanticFallback[requested] ?? "idle";
+    const resolved = library.has(requested) ? requested : library.has(fallback) ? fallback : "idle";
+    const selected = chooseAction(library, resolved);
+    if (!selected) return 0;
+    return showSelectedAction(resolved, selected);
+  }, [library, showSelectedAction]);
+
+  const showRandomNonWalkAction = useCallback(async () => {
+    const selected = chooseRandomActionAsset(library, new Set(["walk"]));
+    if (!selected) return showAction("idle");
+    return showSelectedAction(selected.action, selected.asset);
+  }, [library, showAction, showSelectedAction]);
 
   const loadInstalledPack = useCallback(async (afterCurrentAction = false) => {
     const pack = await invoke<InstalledAssetPack>("installed_asset_pack", { role: profile.role });
@@ -703,41 +675,29 @@ function Pet() {
     setActionRules(normalizeActionRules(pack.rules));
   }, [profile.role]);
 
-  const restorePriorityAction = useCallback(async () => {
+  const restoreAfterOverride = useCallback(async () => {
     if (interactionActive.current) return;
-    if (musicPlayingRef.current) await showAction("dance", false);
-    else if (sharingRef.current) await showAction("shared", false);
-    else if (lowBatteryRef.current) await showAction("low_battery", false);
-    else if (chargingRef.current) await showAction("charging", false);
-    else if (hotRef.current) await showAction("hot", false);
-    else if (sleepingRef.current) await showAction("sleep", false);
-    else await showAction("idle", false);
-  }, [showAction]);
+    if (musicPlayingRef.current) await showAction("dance");
+    else await showRandomNonWalkAction();
+  }, [showAction, showRandomNonWalkAction]);
 
-  const runTransient = useCallback(async (next: string, wakesSystem: boolean) => {
+  const runInteraction = useCallback(async (next: string) => {
     const version = ++interactionVersion.current;
     movementVersion.current += 1;
     interactionActive.current = true;
-    if (wakesSystem && next !== "wake") {
-      sleepingRef.current = false;
-      setSystemSleeping(false);
-    }
     const duration = await showAction(next);
     await wait(duration || 900);
     if (interactionVersion.current !== version) return;
     interactionActive.current = false;
-    await restorePriorityAction();
-  }, [restorePriorityAction, showAction]);
-
-  const runInteraction = useCallback((next: string) => runTransient(next, true), [runTransient]);
-  const runSystemReaction = useCallback((next: string) => runTransient(next, false), [runTransient]);
+    await restoreAfterOverride();
+  }, [restoreAfterOverride, showAction]);
 
   const walkSlowly = useCallback(async (cancelled: () => boolean) => {
     const version = ++movementVersion.current;
     const windowHandle = getCurrentWindow();
     try {
       const monitor = await currentMonitor();
-      if (!monitor || cancelled()) return;
+      if (!monitor || cancelled()) return false;
       const [start, windowSize] = await Promise.all([
         windowHandle.outerPosition(),
         windowHandle.outerSize(),
@@ -754,7 +714,7 @@ function Pet() {
       const targetX = Math.min(maxX, Math.max(minX, start.x + direction * desiredDistance));
       const targetY = Math.min(maxY, Math.max(minY, start.y + (Math.random() - 0.5) * 36 * monitor.scaleFactor));
       const distance = Math.hypot(targetX - start.x, targetY - start.y);
-      if (distance < 8) return;
+      if (distance < 8) return false;
 
       const sourceFacesLeft = profile.role === "bubu";
       const shouldFaceLeft = direction < 0;
@@ -764,7 +724,7 @@ function Pet() {
       const startedAt = performance.now();
 
       while (!cancelled() && movementVersion.current === version && !interactionActive.current
-        && !musicPlayingRef.current && !sharingRef.current) {
+        && !musicPlayingRef.current) {
         const progress = Math.min(1, (performance.now() - startedAt) / duration);
         await windowHandle.setPosition(new PhysicalPosition(
           Math.round(start.x + (targetX - start.x) * progress),
@@ -773,8 +733,10 @@ function Pet() {
         if (progress >= 1) break;
         await wait(33);
       }
+      return true;
     } catch {
       // 浏览器预览没有原生窗口；实际 Tauri 窗口会执行平滑位移。
+      return false;
     }
   }, [profile.role, showAction]);
 
@@ -829,8 +791,8 @@ function Pet() {
 
   useEffect(() => {
     setMirrored(false);
-    showAction("idle");
-  }, [library, profile.role, showAction]);
+    showRandomNonWalkAction();
+  }, [library, profile.role, showRandomNonWalkAction]);
 
   useEffect(() => {
     let trueCount = 0;
@@ -853,117 +815,69 @@ function Pet() {
   }, []);
 
   useEffect(() => {
-    const check = () => invoke<boolean>("screen_share_active").then((active) => {
-      if (active && !incomingSharingRef.current && !musicPlayingRef.current) {
-        runSystemReaction("message");
-      }
-      incomingSharingRef.current = active;
-      setIsSharing(active);
-    }).catch(() => undefined);
-    check();
-    const timer = window.setInterval(check, 1500);
-    return () => window.clearInterval(timer);
-  }, [runSystemReaction]);
-
-  useEffect(() => {
-    let activityScore = 0;
-    const check = () => invoke<number>("system_idle_seconds")
-      .then((seconds) => {
-        setSystemSleeping(seconds >= actionRules.sleepAfterSeconds);
-        activityScore = seconds <= 4 ? Math.min(12, activityScore + 1) : Math.max(0, activityScore - 1);
-        workActiveRef.current = activityScore >= 6;
-      })
+    const check = () => invoke<boolean>("screen_share_active")
+      .then(setIsSharing)
       .catch(() => undefined);
     check();
-    const timer = window.setInterval(check, 3_000);
-    return () => window.clearInterval(timer);
-  }, [actionRules.sleepAfterSeconds]);
-
-  useEffect(() => {
-    let hotSamples = 0;
-    let coolSamples = 0;
-    let confirmedHot = false;
-    const check = () => invoke<DeviceStatus>("device_status").then((status) => {
-      if (status.hot) {
-        hotSamples += 1;
-        coolSamples = 0;
-        if (hotSamples >= 6) confirmedHot = true;
-      } else {
-        coolSamples += 1;
-        hotSamples = 0;
-        if (coolSamples >= 3) confirmedHot = false;
-      }
-      const next = { ...status, hot: confirmedHot };
-      setDeviceStatus((previous) => previous.batteryPercentage === next.batteryPercentage
-        && previous.charging === next.charging && previous.hot === next.hot ? previous : next);
-    }).catch(() => undefined);
-    check();
-    const timer = window.setInterval(check, 5_000);
+    const timer = window.setInterval(check, 1500);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    const wasSleeping = sleepingRef.current;
-    const wasVisiblySleeping = actionRef.current === "sleep";
     musicPlayingRef.current = musicPlaying;
-    sharingRef.current = isSharing;
-    sleepingRef.current = systemSleeping;
-    lowBatteryRef.current = deviceStatus.batteryPercentage !== null
-      && deviceStatus.batteryPercentage <= 20 && !deviceStatus.charging;
-    chargingRef.current = deviceStatus.batteryPercentage !== null
-      && deviceStatus.batteryPercentage < 50 && deviceStatus.charging;
-    hotRef.current = deviceStatus.hot;
-    if (musicPlaying || isSharing || systemSleeping || lowBatteryRef.current
-      || chargingRef.current || hotRef.current) movementVersion.current += 1;
-    if (!musicPlaying && !isSharing && wasSleeping && !systemSleeping
-      && wasVisiblySleeping && !interactionActive.current) {
-      runInteraction("wake");
+    if (!musicPlaying) {
+      if (actionRef.current === "dance" && !interactionActive.current) {
+        showRandomNonWalkAction();
+      }
       return;
     }
-    restorePriorityAction();
-  }, [deviceStatus, isSharing, musicPlaying, restorePriorityAction, runInteraction, systemSleeping]);
+
+    movementVersion.current += 1;
+    let stopped = false;
+    const danceInterrupted = () => stopped || !musicPlayingRef.current || interactionActive.current;
+    const run = async () => {
+      while (!stopped && musicPlayingRef.current) {
+        if (interactionActive.current) {
+          await waitUnlessCancelled(120, () => stopped || !musicPlayingRef.current);
+          continue;
+        }
+        const remaining = actionRef.current === "dance"
+          ? Math.max(0, actionEndsAt.current - Date.now())
+          : 0;
+        const duration = remaining || await showAction("dance");
+        await waitUnlessCancelled(duration || 900, danceInterrupted);
+      }
+    };
+    run();
+    return () => { stopped = true; };
+  }, [musicPlaying, showAction, showRandomNonWalkAction]);
 
   useEffect(() => {
     let stopped = false;
-    const cancelled = () => stopped;
+    const blocked = () => stopped || interactionActive.current || musicPlayingRef.current;
 
     const run = async () => {
-      if (!await waitUnlessCancelled(2_800, cancelled)) return;
+      await waitUnlessCancelled(1_200, blocked);
       while (!stopped) {
-        if (interactionActive.current || musicPlayingRef.current || sharingRef.current || sleepingRef.current
-          || lowBatteryRef.current || chargingRef.current || hotRef.current) {
-          await waitUnlessCancelled(350, cancelled);
+        if (interactionActive.current || musicPlayingRef.current) {
+          await waitUnlessCancelled(200, () => stopped);
           continue;
         }
 
-        const now = Date.now();
-        const next = chooseAmbientAction({
-          musicPlaying: false,
-          screenSharing: false,
-          lowBattery: false,
-          charging: false,
-          hot: false,
-          sleeping: false,
-          drinkDue: now >= drinkDueAt.current,
-          eatDue: now >= eatDueAt.current,
-          workDue: workActiveRef.current && now >= workDueAt.current,
-        }, Math.random(), actionRules.ambientWeights);
-        if (next === "drink") drinkDueAt.current = now + (actionRules.drinkMinMinutes
-          + Math.random() * (actionRules.drinkMaxMinutes - actionRules.drinkMinMinutes)) * 60_000;
-        if (next === "eat") eatDueAt.current = now + (actionRules.eatMinMinutes
-          + Math.random() * (actionRules.eatMaxMinutes - actionRules.eatMinMinutes)) * 60_000;
-        if (next === "work") workDueAt.current = now + (actionRules.workMinMinutes
-          + Math.random() * (actionRules.workMaxMinutes - actionRules.workMinMinutes)) * 60_000;
-
-        if (next === "walk") {
-          await walkSlowly(cancelled);
+        if (shouldStartWalk(Math.random(), actionRules.walkChance)) {
+          await walkSlowly(blocked);
+          if (stopped) return;
+          if (interactionActive.current || musicPlayingRef.current) continue;
+          // walk 只在窗口位移期间显示，移动结束立即换回非 walk 动作。
+          const duration = await showRandomNonWalkAction();
+          await waitUnlessCancelled(duration || 1_200, blocked);
         } else {
-          const duration = await showAction(next);
-          await waitUnlessCancelled(duration || 1_200, cancelled);
+          const duration = await showRandomNonWalkAction();
+          await waitUnlessCancelled(duration || 1_200, blocked);
         }
 
-        await restorePriorityAction();
-        await waitUnlessCancelled(3_500 + Math.random() * 4_500, cancelled);
+        if (stopped) return;
+        await waitUnlessCancelled(700 + Math.random() * 2_300, blocked);
       }
     };
 
@@ -972,7 +886,7 @@ function Pet() {
       stopped = true;
       movementVersion.current += 1;
     };
-  }, [actionRules, library, restorePriorityAction, showAction, walkSlowly]);
+  }, [actionRules.walkChance, library, showRandomNonWalkAction, walkSlowly]);
 
   const openSettings = useCallback(async () => {
     const position = await positionBesidePet(SETTINGS_WIDTH, SETTINGS_HEIGHT);
@@ -994,7 +908,6 @@ function Pet() {
   }, []);
 
   const openViewer = useCallback(async () => {
-    runInteraction("watching");
     const binding = await invoke<BindingStatus>("binding_status").catch(() => null);
     if (!binding || binding.state !== "bound") {
       await openBindingWindow();
@@ -1048,7 +961,7 @@ function Pet() {
       await emitTo("main", "viewer-status", "failed").catch(() => undefined);
       console.error("无法打开远程画面", reason);
     }
-  }, [runInteraction]);
+  }, []);
 
   useEffect(() => {
     const publisher = new ScreenPublisher();
@@ -1141,13 +1054,6 @@ function Pet() {
     return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
   }, [openSettings, openViewer]);
 
-  useEffect(() => {
-    const unlisten = listen<"connected" | "failed">("viewer-status", (event) => {
-      runInteraction(event.payload === "connected" ? "happy" : "sad");
-    });
-    return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
-  }, [runInteraction]);
-
   const openPetMenu = async () => {
     const position = await positionBesidePet(MENU_WIDTH, MENU_HEIGHT, 6);
     try {
@@ -1198,17 +1104,7 @@ function Pet() {
           if (dragged) {
             runInteraction("drop");
           } else {
-            const now = Date.now();
-            clickTimesRef.current = [...clickTimesRef.current.filter((time) => now - time <= 4_000), now];
-            const clicks = clickTimesRef.current;
-            if (clicks.length >= 5) {
-              clickTimesRef.current = [];
-              runInteraction("angry");
-            } else if (clicks.length >= 2 && now - clicks[clicks.length - 2] <= 350) {
-              runInteraction("happy");
-            } else {
-              runInteraction("click");
-            }
+            runInteraction("click");
           }
         }}
         onPointerCancel={(event) => {
