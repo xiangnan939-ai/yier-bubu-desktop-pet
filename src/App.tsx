@@ -10,17 +10,12 @@ import {
 } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  DEFAULT_WALK_CHANCE,
-  shouldStartWalk,
-} from "./actionPolicy";
+import { PetAnimationStateMachine } from "./animation/stateMachine";
+import type { AnimationSnapshot } from "./animation/types";
+import { DEFAULT_WALK_CHANCE } from "./animation/weights";
 import {
   buildPetLibrary,
-  chooseAction,
-  chooseRandomActionAsset,
-  getGifDuration,
   type HotPetAsset,
-  type PetAsset,
   type PetRole,
 } from "./petAssets";
 import {
@@ -149,10 +144,6 @@ function loadPetSize() {
   return Number.isFinite(stored) && stored > 0 ? clampPetSize(stored) : DEFAULT_PET_SIZE;
 }
 
-function wait(milliseconds: number) {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
 function normalizePairingCode(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
 }
@@ -182,14 +173,6 @@ async function openBindingWindow() {
   } catch {
     window.open("/?mode=binding", "_blank");
   }
-}
-
-async function waitUnlessCancelled(milliseconds: number, cancelled: () => boolean) {
-  const end = Date.now() + milliseconds;
-  while (!cancelled() && Date.now() < end) {
-    await wait(Math.min(250, end - Date.now()));
-  }
-  return !cancelled();
 }
 
 async function resizeMainPet(size: number) {
@@ -616,129 +599,25 @@ function Pet() {
     () => buildPetLibrary(profile.role, hotPack.assets),
     [hotPack.assets, profile.role],
   );
-  const firstAsset = useMemo(() => chooseAction(library, "idle"), [library]);
-  const [action, setAction] = useState("idle");
-  const [asset, setAsset] = useState(firstAsset?.url ?? "");
-  const [assetKey, setAssetKey] = useState(0);
+  const [animation, setAnimation] = useState<AnimationSnapshot>({
+    action: "idle",
+    assetUrl: "",
+    assetKey: 0,
+    mirrored: false,
+    macroState: "idle",
+    mode: "ambient",
+  });
   const [isSharing, setIsSharing] = useState(false);
-  const [musicPlaying, setMusicPlaying] = useState(false);
   const [petSize, setPetSize] = useState(loadPetSize);
-  const [mirrored, setMirrored] = useState(false);
-  const actionRef = useRef("idle");
-  const interactionVersion = useRef(0);
-  const interactionActive = useRef(false);
-  const movementVersion = useRef(0);
-  const musicPlayingRef = useRef(false);
-  const actionEndsAt = useRef(0);
-  const actionDisplayVersion = useRef(0);
+  const animationRef = useRef<PetAnimationStateMachine | null>(null);
   const realtimeRef = useRef<RealtimeMessaging | null>(null);
   const publisherRef = useRef<ScreenPublisher | null>(null);
 
-  const showSelectedAction = useCallback(async (
-    nextAction: string,
-    selected: PetAsset,
-  ) => {
-    const displayVersion = ++actionDisplayVersion.current;
-    actionRef.current = nextAction;
-    setAction(nextAction);
-    setAsset(selected.url);
-    setAssetKey((value) => value + 1);
-    const duration = Math.max(600, await getGifDuration(selected.url));
-    if (actionDisplayVersion.current === displayVersion) {
-      actionEndsAt.current = Date.now() + duration;
-    }
-    return duration;
-  }, []);
-
-  const showAction = useCallback(async (requested: string) => {
-    const semanticFallback: Record<string, string> = { drag: "click", drop: "idle", shared: "watching" };
-    const fallback = semanticFallback[requested] ?? "idle";
-    const resolved = library.has(requested) ? requested : library.has(fallback) ? fallback : "idle";
-    const selected = chooseAction(library, resolved);
-    if (!selected) return 0;
-    return showSelectedAction(resolved, selected);
-  }, [library, showSelectedAction]);
-
-  const showRandomNonWalkAction = useCallback(async () => {
-    const selected = chooseRandomActionAsset(library, new Set(["walk"]));
-    if (!selected) return showAction("idle");
-    return showSelectedAction(selected.action, selected.asset);
-  }, [library, showAction, showSelectedAction]);
-
-  const loadInstalledPack = useCallback(async (afterCurrentAction = false) => {
+  const loadInstalledPack = useCallback(async () => {
     const pack = await invoke<InstalledAssetPack>("installed_asset_pack", { role: profile.role });
-    if (afterCurrentAction) {
-      const remaining = Math.max(0, actionEndsAt.current - Date.now());
-      if (remaining) await wait(remaining);
-    }
     setHotPack({ version: pack.version, assets: hotAssetsFromPack(pack) });
     setActionRules(normalizeActionRules(pack.rules));
   }, [profile.role]);
-
-  const restoreAfterOverride = useCallback(async () => {
-    if (interactionActive.current) return;
-    if (musicPlayingRef.current) await showAction("dance");
-    else await showRandomNonWalkAction();
-  }, [showAction, showRandomNonWalkAction]);
-
-  const runInteraction = useCallback(async (next: string) => {
-    const version = ++interactionVersion.current;
-    movementVersion.current += 1;
-    interactionActive.current = true;
-    const duration = await showAction(next);
-    await wait(duration || 900);
-    if (interactionVersion.current !== version) return;
-    interactionActive.current = false;
-    await restoreAfterOverride();
-  }, [restoreAfterOverride, showAction]);
-
-  const walkSlowly = useCallback(async (cancelled: () => boolean) => {
-    const version = ++movementVersion.current;
-    const windowHandle = getCurrentWindow();
-    try {
-      const monitor = await currentMonitor();
-      if (!monitor || cancelled()) return false;
-      const [start, windowSize] = await Promise.all([
-        windowHandle.outerPosition(),
-        windowHandle.outerSize(),
-      ]);
-      const work = monitor.workArea;
-      const minX = work.position.x;
-      const maxX = work.position.x + work.size.width - windowSize.width;
-      const minY = work.position.y;
-      const maxY = work.position.y + work.size.height - windowSize.height;
-      const desiredDistance = (90 + Math.random() * 130) * monitor.scaleFactor;
-      const canMoveRight = maxX - start.x > desiredDistance * 0.7;
-      const canMoveLeft = start.x - minX > desiredDistance * 0.7;
-      const direction = canMoveRight && canMoveLeft ? (Math.random() < 0.5 ? -1 : 1) : canMoveRight ? 1 : -1;
-      const targetX = Math.min(maxX, Math.max(minX, start.x + direction * desiredDistance));
-      const targetY = Math.min(maxY, Math.max(minY, start.y + (Math.random() - 0.5) * 36 * monitor.scaleFactor));
-      const distance = Math.hypot(targetX - start.x, targetY - start.y);
-      if (distance < 8) return false;
-
-      const sourceFacesLeft = profile.role === "bubu";
-      const shouldFaceLeft = direction < 0;
-      setMirrored(sourceFacesLeft !== shouldFaceLeft);
-      await showAction("walk");
-      const duration = Math.min(7_000, Math.max(2_800, distance / (36 * monitor.scaleFactor) * 1_000));
-      const startedAt = performance.now();
-
-      while (!cancelled() && movementVersion.current === version && !interactionActive.current
-        && !musicPlayingRef.current) {
-        const progress = Math.min(1, (performance.now() - startedAt) / duration);
-        await windowHandle.setPosition(new PhysicalPosition(
-          Math.round(start.x + (targetX - start.x) * progress),
-          Math.round(start.y + (targetY - start.y) * progress),
-        ));
-        if (progress >= 1) break;
-        await wait(33);
-      }
-      return true;
-    } catch {
-      // 浏览器预览没有原生窗口；实际 Tauri 窗口会执行平滑位移。
-      return false;
-    }
-  }, [profile.role, showAction]);
 
   useEffect(() => {
     invoke<AppProfile>("app_profile").then(setProfile).catch(() => undefined);
@@ -759,12 +638,60 @@ function Pet() {
   }, []);
 
   useEffect(() => {
+    const windowHandle = getCurrentWindow();
+    const engine = new PetAnimationStateMachine({
+      role: profile.role,
+      library,
+      walkChance: actionRules.walkChance,
+      onState: setAnimation,
+      getWindowMetrics: async () => {
+        const [monitor, position, size] = await Promise.all([
+          currentMonitor(),
+          windowHandle.outerPosition(),
+          windowHandle.outerSize(),
+        ]);
+        if (!monitor) throw new Error("无法读取桌宠所在显示器");
+        return {
+          x: position.x,
+          y: position.y,
+          width: size.width,
+          height: size.height,
+          workAreaX: monitor.workArea.position.x,
+          workAreaY: monitor.workArea.position.y,
+          workAreaWidth: monitor.workArea.size.width,
+          workAreaHeight: monitor.workArea.size.height,
+          scaleFactor: monitor.scaleFactor,
+        };
+      },
+      moveWindow: (x, y) => windowHandle.setPosition(new PhysicalPosition(x, y)),
+    });
+    animationRef.current = engine;
+    engine.start();
+    return () => {
+      engine.stop();
+      if (animationRef.current === engine) animationRef.current = null;
+    };
+  }, [profile.role]);
+
+  useEffect(() => {
+    animationRef.current?.updateLibrary(library);
+  }, [library]);
+
+  useEffect(() => {
+    animationRef.current?.updateWalkChance(actionRules.walkChance);
+  }, [actionRules.walkChance]);
+
+  useEffect(() => {
+    animationRef.current?.updateExternalState({ screenSharing: isSharing });
+  }, [isSharing]);
+
+  useEffect(() => {
     loadInstalledPack().catch(() => undefined);
   }, [loadInstalledPack]);
 
   useEffect(() => {
     const unlisten = listen("asset-pack-updated", () => {
-      loadInstalledPack(true).catch(() => undefined);
+      loadInstalledPack().catch(() => undefined);
     });
     return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
   }, [loadInstalledPack]);
@@ -790,31 +717,6 @@ function Pet() {
   }, []);
 
   useEffect(() => {
-    setMirrored(false);
-    showRandomNonWalkAction();
-  }, [library, profile.role, showRandomNonWalkAction]);
-
-  useEffect(() => {
-    let trueCount = 0;
-    let falseCount = 0;
-    const check = async () => {
-      const playing = await invoke<boolean>("system_audio_playing").catch(() => false);
-      if (playing) {
-        trueCount += 1;
-        falseCount = 0;
-        if (trueCount >= 2) setMusicPlaying(true);
-      } else {
-        falseCount += 1;
-        trueCount = 0;
-        if (falseCount >= 3) setMusicPlaying(false);
-      }
-    };
-    check();
-    const timer = window.setInterval(check, 900);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
     const check = () => invoke<boolean>("screen_share_active")
       .then(setIsSharing)
       .catch(() => undefined);
@@ -822,71 +724,6 @@ function Pet() {
     const timer = window.setInterval(check, 1500);
     return () => window.clearInterval(timer);
   }, []);
-
-  useEffect(() => {
-    musicPlayingRef.current = musicPlaying;
-    if (!musicPlaying) {
-      if (actionRef.current === "dance" && !interactionActive.current) {
-        showRandomNonWalkAction();
-      }
-      return;
-    }
-
-    movementVersion.current += 1;
-    let stopped = false;
-    const danceInterrupted = () => stopped || !musicPlayingRef.current || interactionActive.current;
-    const run = async () => {
-      while (!stopped && musicPlayingRef.current) {
-        if (interactionActive.current) {
-          await waitUnlessCancelled(120, () => stopped || !musicPlayingRef.current);
-          continue;
-        }
-        const remaining = actionRef.current === "dance"
-          ? Math.max(0, actionEndsAt.current - Date.now())
-          : 0;
-        const duration = remaining || await showAction("dance");
-        await waitUnlessCancelled(duration || 900, danceInterrupted);
-      }
-    };
-    run();
-    return () => { stopped = true; };
-  }, [musicPlaying, showAction, showRandomNonWalkAction]);
-
-  useEffect(() => {
-    let stopped = false;
-    const blocked = () => stopped || interactionActive.current || musicPlayingRef.current;
-
-    const run = async () => {
-      await waitUnlessCancelled(1_200, blocked);
-      while (!stopped) {
-        if (interactionActive.current || musicPlayingRef.current) {
-          await waitUnlessCancelled(200, () => stopped);
-          continue;
-        }
-
-        if (shouldStartWalk(Math.random(), actionRules.walkChance)) {
-          await walkSlowly(blocked);
-          if (stopped) return;
-          if (interactionActive.current || musicPlayingRef.current) continue;
-          // walk 只在窗口位移期间显示，移动结束立即换回非 walk 动作。
-          const duration = await showRandomNonWalkAction();
-          await waitUnlessCancelled(duration || 1_200, blocked);
-        } else {
-          const duration = await showRandomNonWalkAction();
-          await waitUnlessCancelled(duration || 1_200, blocked);
-        }
-
-        if (stopped) return;
-        await waitUnlessCancelled(700 + Math.random() * 2_300, blocked);
-      }
-    };
-
-    run();
-    return () => {
-      stopped = true;
-      movementVersion.current += 1;
-    };
-  }, [actionRules.walkChance, library, showRandomNonWalkAction, walkSlowly]);
 
   const openSettings = useCallback(async () => {
     const position = await positionBesidePet(SETTINGS_WIDTH, SETTINGS_HEIGHT);
@@ -933,6 +770,7 @@ function Pet() {
         resizable: true,
       });
       viewer.once("tauri://destroyed", () => {
+        animationRef.current?.updateExternalState({ viewingRemote: false });
         emitTo("main", "viewer-stop-request", session).catch(() => undefined);
       }).catch(() => undefined);
       await new Promise<void>((resolve, reject) => {
@@ -952,6 +790,7 @@ function Pet() {
       });
       await messaging.send(signal);
     } catch (reason) {
+      animationRef.current?.updateExternalState({ viewingRemote: false });
       if (attemptedSessionId) {
         await emitTo("viewer", "viewer-error", {
           sessionId: attemptedSessionId,
@@ -1054,6 +893,13 @@ function Pet() {
     return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
   }, [openSettings, openViewer]);
 
+  useEffect(() => {
+    const unlisten = listen<"connected" | "failed">("viewer-status", (event) => {
+      animationRef.current?.updateExternalState({ viewingRemote: event.payload === "connected" });
+    });
+    return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
+  }, []);
+
   const openPetMenu = async () => {
     const position = await positionBesidePet(MENU_WIDTH, MENU_HEIGHT, 6);
     try {
@@ -1074,7 +920,7 @@ function Pet() {
       event.preventDefault();
       openPetMenu();
     }}>
-      <button className="pet-hitbox" aria-label={`${profile.petName}，当前动作 ${action}`}
+      <button className="pet-hitbox" aria-label={`${profile.petName}，当前动作 ${animation.action}`}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           const button = event.currentTarget as HTMLButtonElement;
@@ -1092,7 +938,7 @@ function Pet() {
           );
           if (distance < 5) return;
           button.dataset.dragging = "true";
-          runInteraction("drag");
+          animationRef.current?.dispatch({ type: "drag_start" });
           getCurrentWindow().startDragging().catch(() => undefined);
         }}
         onPointerUp={(event) => {
@@ -1102,19 +948,22 @@ function Pet() {
           delete button.dataset.pointerY;
           delete button.dataset.dragging;
           if (dragged) {
-            runInteraction("drop");
+            animationRef.current?.dispatch({ type: "drag_end" });
           } else {
-            runInteraction("click");
+            animationRef.current?.dispatch({ type: "click" });
           }
         }}
         onPointerCancel={(event) => {
           const button = event.currentTarget as HTMLButtonElement;
+          const dragged = button.dataset.dragging === "true";
           delete button.dataset.pointerX;
           delete button.dataset.pointerY;
           delete button.dataset.dragging;
+          if (dragged) animationRef.current?.dispatch({ type: "drag_end" });
         }}>
-        {asset && <img key={assetKey} className={`pet-image${mirrored ? " mirrored" : ""}`}
-          src={asset} alt={profile.petName} draggable={false} />}
+        {animation.assetUrl && <img key={animation.assetKey}
+          className={`pet-image${animation.mirrored ? " mirrored" : ""}`}
+          src={animation.assetUrl} alt={profile.petName} draggable={false} />}
       </button>
       {isSharing && <div className="sharing-badge">桌面正在分享</div>}
     </main>

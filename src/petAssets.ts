@@ -7,7 +7,6 @@ export type PetAsset = {
 };
 
 export type HotPetAsset = PetAsset & { action: string };
-export type SelectedPetAction = { action: string; asset: PetAsset };
 
 const gifModules = import.meta.glob<string>(
   "../assets/characters/**/*.gif",
@@ -41,20 +40,4 @@ export function buildPetLibrary(role: PetRole, hotAssets: HotPetAsset[] = []) {
 export function chooseAction(library: Map<string, PetAsset[]>, requested: string) {
   const candidates = library.get(requested) ?? library.get("idle") ?? [];
   return candidates[Math.floor(Math.random() * candidates.length)] ?? null;
-}
-
-/** 展平后再随机，保证每一个上传的 GIF 都有相同的非零出现概率。 */
-export function chooseRandomActionAsset(
-  library: Map<string, PetAsset[]>,
-  excludedActions: ReadonlySet<string> = new Set(),
-  random = Math.random(),
-): SelectedPetAction | null {
-  const candidates: SelectedPetAction[] = [];
-  for (const [action, assets] of library) {
-    if (excludedActions.has(action)) continue;
-    for (const asset of assets) candidates.push({ action, asset });
-  }
-  if (!candidates.length) return null;
-  const index = Math.min(candidates.length - 1, Math.floor(random * candidates.length));
-  return candidates[index];
 }

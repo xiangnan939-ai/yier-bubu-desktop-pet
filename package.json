@@ -1,11 +1,12 @@
 {
   "name": "yier-bubu-desktop-pet",
   "private": true,
-  "version": "0.5.19",
+  "version": "0.5.20",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build --manifest && node scripts/verify-bundled-character-assets.mjs",
+    "build": "tsc && node scripts/verify-animation-policy.mjs && vite build --manifest && node scripts/verify-bundled-character-assets.mjs",
+    "verify:animation": "node scripts/verify-animation-policy.mjs",
     "verify:assets": "node scripts/verify-bundled-character-assets.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
