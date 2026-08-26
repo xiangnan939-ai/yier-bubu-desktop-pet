@@ -19,10 +19,33 @@ const MAX_PACK_BYTES: usize = 256 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_FILES: usize = 512;
 
-pub const APP_UPDATE_ENDPOINT: Option<&str> = option_env!("YIER_BUBU_APP_UPDATE_ENDPOINT");
-pub const APP_UPDATE_PUBLIC_KEY: Option<&str> = option_env!("YIER_BUBU_APP_UPDATE_PUBLIC_KEY");
-const ASSET_MANIFEST_URL: Option<&str> = option_env!("YIER_BUBU_ASSET_MANIFEST_URL");
-const ASSET_PUBLIC_KEY: Option<&str> = option_env!("YIER_BUBU_ASSET_PUBLIC_KEY");
+const DEFAULT_APP_UPDATE_ENDPOINT: &str =
+    "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/latest.json";
+const DEFAULT_APP_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MTQ3OTVCREZFNjEyRjUKUldUMUV1YmZXM2tVdU0rYWhPVEljQ1dwNENPeEk3bm01NnRHL1pRY081RzNZZDdKb3pqMWxBWVgK";
+const DEFAULT_ASSET_MANIFEST_URL: &str =
+    "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/asset-manifest.json";
+const DEFAULT_ASSET_PUBLIC_KEY: &str = "bBO0sLQke2uZ4bL7C3cYnjnk3WSTvIP1HvZpUGVscCg=";
+
+// Update endpoints and verification keys are public information. Keep safe
+// built-in defaults so a local signed build cannot silently disable updates
+// merely because CI-only environment variables were not present.
+pub const APP_UPDATE_ENDPOINT: Option<&str> = match option_env!("YIER_BUBU_APP_UPDATE_ENDPOINT") {
+    Some(value) => Some(value),
+    None => Some(DEFAULT_APP_UPDATE_ENDPOINT),
+};
+pub const APP_UPDATE_PUBLIC_KEY: Option<&str> = match option_env!("YIER_BUBU_APP_UPDATE_PUBLIC_KEY")
+{
+    Some(value) => Some(value),
+    None => Some(DEFAULT_APP_UPDATE_PUBLIC_KEY),
+};
+const ASSET_MANIFEST_URL: Option<&str> = match option_env!("YIER_BUBU_ASSET_MANIFEST_URL") {
+    Some(value) => Some(value),
+    None => Some(DEFAULT_ASSET_MANIFEST_URL),
+};
+const ASSET_PUBLIC_KEY: Option<&str> = match option_env!("YIER_BUBU_ASSET_PUBLIC_KEY") {
+    Some(value) => Some(value),
+    None => Some(DEFAULT_ASSET_PUBLIC_KEY),
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -613,6 +636,25 @@ pub async fn check_and_install_asset_update(app: AppHandle) -> Result<AssetUpdat
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+
+    #[test]
+    fn local_build_keeps_program_and_asset_updates_enabled() {
+        assert!(configured(APP_UPDATE_ENDPOINT));
+        assert!(configured(APP_UPDATE_PUBLIC_KEY));
+        assert!(configured(ASSET_MANIFEST_URL));
+        assert!(configured(ASSET_PUBLIC_KEY));
+
+        let tauri_config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            APP_UPDATE_ENDPOINT,
+            tauri_config["plugins"]["updater"]["endpoints"][0].as_str()
+        );
+        assert_eq!(
+            APP_UPDATE_PUBLIC_KEY,
+            tauri_config["plugins"]["updater"]["pubkey"].as_str()
+        );
+    }
 
     #[test]
     fn signed_asset_manifest_is_verified_and_tampering_is_rejected() {
