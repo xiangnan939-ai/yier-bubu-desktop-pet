@@ -6592,7 +6592,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "yier-bubu-desktop-pet"
-version = "0.5.20"
+version = "0.5.21"
 dependencies = [
  "base64 0.22.1",
  "battery",
@@ -6601,6 +6601,7 @@ dependencies = [
  "hmac",
  "image",
  "keyring",
+ "minisign-verify",
  "objc2-core-audio",
  "objc2-core-graphics",
  "objc2-foundation",

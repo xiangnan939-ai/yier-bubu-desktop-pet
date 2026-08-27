@@ -230,8 +230,8 @@ fn platform_audio_playing() -> bool {
 fn platform_audio_playing() -> bool {
     use windows::Win32::{
         Media::Audio::{
-            eMultimedia, eRender, AudioSessionStateActive, IAudioSessionManager2,
-            IMMDeviceEnumerator, MMDeviceEnumerator,
+            eMultimedia, eRender, Endpoints::IAudioMeterInformation, IMMDeviceEnumerator,
+            MMDeviceEnumerator,
         },
         System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED},
     };
@@ -246,23 +246,15 @@ fn platform_audio_playing() -> bool {
         let Ok(device) = device_enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) else {
             return false;
         };
-        let Ok(manager): windows::core::Result<IAudioSessionManager2> =
+        let Ok(meter): windows::core::Result<IAudioMeterInformation> =
             device.Activate(CLSCTX_ALL, None)
         else {
             return false;
         };
-        let Ok(sessions) = manager.GetSessionEnumerator() else {
-            return false;
-        };
-        let Ok(count) = sessions.GetCount() else {
-            return false;
-        };
-        (0..count).any(|index| {
-            sessions
-                .GetSession(index)
-                .and_then(|session| session.GetState())
-                .is_ok_and(|state| state == AudioSessionStateActive)
-        })
+        // An AudioSession can remain Active after music has stopped. The output
+        // endpoint peak reflects audible samples instead, while the frontend's
+        // three-sample debounce filters normal brief gaps between notes/tracks.
+        meter.GetPeakValue().is_ok_and(|peak| peak > 0.000_5)
     }
 }
 

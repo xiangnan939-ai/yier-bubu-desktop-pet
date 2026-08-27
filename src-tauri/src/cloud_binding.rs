@@ -1588,6 +1588,44 @@ fn edgeone_cookie_header(headers: &reqwest::header::HeaderMap) -> Option<String>
     Some(format!("{}; {}", token?, time?))
 }
 
+pub(crate) struct ProtectedServiceAccess {
+    pub endpoint: String,
+    pub cookie: Option<String>,
+}
+
+/// Resolve the short-lived EdgeOne entry point and exchange its query token for
+/// a normal Cookie header. This is shared by the realtime API and the updater:
+/// project domains require that handshake for clients connecting from mainland
+/// China, while direct/custom-domain deployments work without a cookie.
+pub(crate) async fn protected_service_access(path: &str) -> Option<ProtectedServiceAccess> {
+    let client = short_http_client().ok()?;
+    for endpoint in resolved_endpoints(&client).await {
+        let url = endpoint_request_url(&endpoint, path).ok()?;
+        let response = match client.get(url.clone()).send().await {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if response.status().is_success() {
+            return Some(ProtectedServiceAccess {
+                endpoint: url.to_string(),
+                cookie: None,
+            });
+        }
+        if response.status().is_redirection() && url.query().is_some() {
+            let Some(cookie) = edgeone_cookie_header(response.headers()) else {
+                continue;
+            };
+            let mut clean_url = url;
+            clean_url.set_query(None);
+            return Some(ProtectedServiceAccess {
+                endpoint: clean_url.to_string(),
+                cookie: Some(cookie),
+            });
+        }
+    }
+    None
+}
+
 fn payload_mac<T: Serialize>(key: &[u8], label: &[u8], value: &T) -> Result<String, String> {
     let mut mac = HmacSha256::new_from_slice(key).map_err(|error| error.to_string())?;
     mac.update(label);

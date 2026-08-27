@@ -8,14 +8,18 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signature, VerifyingKey};
 use futures_util::StreamExt;
+use minisign_verify::{PublicKey as MinisignPublicKey, Signature as MinisignSignature};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
+
+use crate::cloud_binding::{protected_service_access, ProtectedServiceAccess};
 use zip::ZipArchive;
 
 const MAX_PACK_BYTES: usize = 256 * 1024 * 1024;
+const RANGE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_FILES: usize = 512;
 
@@ -139,26 +143,66 @@ pub fn update_configuration() -> UpdateConfiguration {
     }
 }
 
-fn app_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let endpoint = APP_UPDATE_ENDPOINT
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "程序发布地址尚未配置".to_string())?;
+fn app_updater(
+    app: &AppHandle,
+    endpoint: &str,
+    cookie: Option<&str>,
+) -> Result<tauri_plugin_updater::Updater, String> {
     require_safe_remote_url(endpoint)?;
     let url = endpoint
         .parse()
         .map_err(|_| "程序更新地址格式无效".to_string())?;
-    app.updater_builder()
+    let mut builder = app.updater_builder().timeout(Duration::from_secs(15));
+    if let Some(cookie) = cookie {
+        builder = builder
+            .header(reqwest::header::COOKIE, cookie)
+            .map_err(|error| format!("初始化更新访问凭据失败：{error}"))?;
+    }
+    builder
         .endpoints(vec![url])
         .map_err(|error| format!("程序更新地址无效：{error}"))?
         .build()
         .map_err(|error| format!("初始化程序更新器失败：{error}"))
 }
 
+async fn checked_app_update(app: &AppHandle) -> Result<Option<Update>, String> {
+    let mut candidates = Vec::new();
+    if let Some(access) = protected_service_access("/api/update-latest").await {
+        candidates.push((access.endpoint, access.cookie));
+    }
+    if let Some(endpoint) = APP_UPDATE_ENDPOINT.filter(|value| !value.trim().is_empty()) {
+        candidates.push((endpoint.to_string(), None));
+    }
+    if candidates.is_empty() {
+        return Err("程序发布地址尚未配置".to_string());
+    }
+
+    let mut errors = Vec::new();
+    for (endpoint, cookie) in candidates {
+        let updater = match app_updater(app, &endpoint, cookie.as_deref()) {
+            Ok(value) => value,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        match updater.check().await {
+            Ok(mut update) => {
+                if let Some(value) = update.as_mut() {
+                    value.timeout = Some(Duration::from_secs(5 * 60));
+                }
+                return Ok(update);
+            }
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    Err(format!("所有更新线路均不可用：{}", errors.join(" | ")))
+}
+
 #[tauri::command]
 pub async fn check_app_update(app: AppHandle) -> Result<AppUpdateCheck, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let update = app_updater(&app)?
-        .check()
+    let update = checked_app_update(&app)
         .await
         .map_err(|error| format!("检查程序更新失败：{error}"))?;
     Ok(match update {
@@ -179,32 +223,60 @@ pub async fn check_app_update(app: AppHandle) -> Result<AppUpdateCheck, String> 
 
 #[tauri::command]
 pub async fn install_app_update(app: AppHandle) -> Result<(), String> {
-    let update = app_updater(&app)?
-        .check()
+    let update = checked_app_update(&app)
         .await
         .map_err(|error| format!("检查程序更新失败：{error}"))?
         .ok_or_else(|| "当前程序已经是最新版".to_string())?;
-    let progress_app = app.clone();
-    let finish_app = app.clone();
-    let mut downloaded_bytes = 0_u64;
-    update
-        .download_and_install(
-            move |chunk_length, total_bytes| {
-                downloaded_bytes = downloaded_bytes.saturating_add(chunk_length as u64);
-                emit_update_progress(
-                    &progress_app,
-                    "app",
-                    "downloading",
-                    downloaded_bytes,
-                    total_bytes,
-                );
-            },
-            move || {
-                emit_update_progress(&finish_app, "app", "installing", 0, None);
-            },
+    if update
+        .download_url
+        .host_str()
+        .is_some_and(|host| host.ends_with(".edgeone.dev"))
+    {
+        let client = reqwest::Client::builder()
+            .default_headers(update.headers.clone())
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(180))
+            .user_agent(format!(
+                "yier-bubu-desktop-pet/{}",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .build()
+            .map_err(|error| format!("创建更新客户端失败：{error}"))?;
+        let bytes = download_bytes_ranged(
+            &client,
+            update.download_url.as_str(),
+            MAX_PACK_BYTES,
+            Some((&app, "app")),
         )
-        .await
-        .map_err(|error| format!("安装程序更新失败：{error}"))?;
+        .await?;
+        verify_program_signature(&bytes, &update.signature)?;
+        emit_update_progress(&app, "app", "installing", 0, None);
+        update
+            .install(&bytes)
+            .map_err(|error| format!("安装程序更新失败：{error}"))?;
+    } else {
+        let progress_app = app.clone();
+        let finish_app = app.clone();
+        let mut downloaded_bytes = 0_u64;
+        update
+            .download_and_install(
+                move |chunk_length, total_bytes| {
+                    downloaded_bytes = downloaded_bytes.saturating_add(chunk_length as u64);
+                    emit_update_progress(
+                        &progress_app,
+                        "app",
+                        "downloading",
+                        downloaded_bytes,
+                        total_bytes,
+                    );
+                },
+                move || {
+                    emit_update_progress(&finish_app, "app", "installing", 0, None);
+                },
+            )
+            .await
+            .map_err(|error| format!("安装程序更新失败：{error}"))?;
+    }
     emit_update_progress(&app, "app", "complete", 0, None);
     Ok(())
 }
@@ -536,6 +608,146 @@ async fn download_bytes(
     Ok(bytes)
 }
 
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let value = value.strip_prefix("bytes ")?;
+    let (range, total) = value.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
+}
+
+async fn download_bytes_ranged(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+    progress: Option<(&AppHandle, &'static str)>,
+) -> Result<Vec<u8>, String> {
+    require_safe_remote_url(url)?;
+    let mut bytes = Vec::new();
+    let mut offset = 0_u64;
+    let mut total = None;
+    loop {
+        let end = offset.saturating_add(RANGE_CHUNK_BYTES as u64 - 1);
+        let response = client
+            .get(url)
+            .header(reqwest::header::RANGE, format!("bytes={offset}-{end}"))
+            .send()
+            .await
+            .map_err(|error| format!("分段下载更新失败：{error}"))?
+            .error_for_status()
+            .map_err(|error| format!("更新服务器返回错误：{error}"))?;
+        let range = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_content_range)
+            .ok_or_else(|| "更新镜像未返回有效的分段范围".to_string())?;
+        if range.0 != offset || range.1 < range.0 || range.2 > limit as u64 {
+            return Err("更新镜像返回的分段范围无效".to_string());
+        }
+        if total.is_some_and(|known| known != range.2) {
+            return Err("更新文件在下载过程中发生了变化".to_string());
+        }
+        total = Some(range.2);
+        let chunk = response
+            .bytes()
+            .await
+            .map_err(|error| format!("读取更新分段失败：{error}"))?;
+        let expected = range.1.saturating_sub(range.0).saturating_add(1);
+        if chunk.len() as u64 != expected {
+            return Err("更新分段长度不完整".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+        offset = range.1.saturating_add(1);
+        if let Some((app, update_type)) = progress {
+            emit_update_progress(app, update_type, "downloading", offset, total);
+        }
+        if offset >= range.2 {
+            return Ok(bytes);
+        }
+    }
+}
+
+fn verify_program_signature(bytes: &[u8], release_signature: &str) -> Result<(), String> {
+    let public_key = APP_UPDATE_PUBLIC_KEY
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "程序更新公钥尚未配置".to_string())?;
+    let public_key = BASE64
+        .decode(public_key)
+        .ok()
+        .and_then(|value| String::from_utf8(value).ok())
+        .ok_or_else(|| "程序更新公钥格式无效".to_string())?;
+    let signature = BASE64
+        .decode(release_signature)
+        .ok()
+        .and_then(|value| String::from_utf8(value).ok())
+        .ok_or_else(|| "程序更新签名格式无效".to_string())?;
+    let public_key = MinisignPublicKey::decode(&public_key)
+        .map_err(|error| format!("程序更新公钥无效：{error}"))?;
+    let signature = MinisignSignature::decode(&signature)
+        .map_err(|error| format!("程序更新签名无效：{error}"))?;
+    public_key
+        .verify(bytes, &signature, true)
+        .map_err(|error| format!("程序更新签名校验失败：{error}"))
+}
+
+fn update_client(cookie: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(value) = cookie {
+        headers.insert(
+            reqwest::header::COOKIE,
+            value
+                .parse()
+                .map_err(|error| format!("更新访问凭据无效：{error}"))?,
+        );
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
+        .user_agent(format!(
+            "yier-bubu-desktop-pet/{}",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|error| format!("创建更新客户端失败：{error}"))
+}
+
+async fn download_asset_manifest(
+) -> Result<(reqwest::Client, Vec<u8>, Option<ProtectedServiceAccess>), String> {
+    let mut errors = Vec::new();
+    if let Some(access) = protected_service_access("/api/update-manifest").await {
+        match update_client(access.cookie.as_deref()) {
+            Ok(client) => match download_bytes(&client, &access.endpoint, 256 * 1024, None).await {
+                Ok(bytes) => return Ok((client, bytes, Some(access))),
+                Err(error) => errors.push(error),
+            },
+            Err(error) => errors.push(error),
+        }
+    }
+    if let Some(url) = ASSET_MANIFEST_URL.filter(|value| !value.trim().is_empty()) {
+        let client = update_client(None)?;
+        match download_bytes(&client, url, 256 * 1024, None).await {
+            Ok(bytes) => return Ok((client, bytes, None)),
+            Err(error) => errors.push(error),
+        }
+    }
+    Err(format!("所有素材更新线路均不可用：{}", errors.join(" | ")))
+}
+
+fn mirrored_pack_url(access: &ProtectedServiceAccess, original: &str) -> Result<String, String> {
+    let original = reqwest::Url::parse(original).map_err(|_| "素材包地址格式无效".to_string())?;
+    let name = original
+        .path_segments()
+        .and_then(Iterator::last)
+        .filter(|value| value.starts_with("character-assets-") && value.ends_with(".zip"))
+        .ok_or_else(|| "素材包文件名无效".to_string())?;
+    let mut mirror =
+        reqwest::Url::parse(&access.endpoint).map_err(|_| "素材镜像地址格式无效".to_string())?;
+    mirror.set_path("/api/update-assets");
+    mirror.query_pairs_mut().clear().append_pair("asset", name);
+    Ok(mirror.to_string())
+}
+
 #[tauri::command]
 pub async fn check_and_install_asset_update(app: AppHandle) -> Result<AssetUpdateResult, String> {
     let (Some(manifest_url), Some(public_key)) = (ASSET_MANIFEST_URL, ASSET_PUBLIC_KEY) else {
@@ -553,16 +765,7 @@ pub async fn check_and_install_asset_update(app: AppHandle) -> Result<AssetUpdat
         });
     }
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
-        .user_agent(format!(
-            "yier-bubu-desktop-pet/{}",
-            env!("CARGO_PKG_VERSION")
-        ))
-        .build()
-        .map_err(|error| format!("创建更新客户端失败：{error}"))?;
-    let manifest_bytes = download_bytes(&client, manifest_url, 256 * 1024, None).await?;
+    let (client, manifest_bytes, mirror_access) = download_asset_manifest().await?;
     let manifest: AssetManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| format!("素材清单格式错误：{error}"))?;
     verify_manifest(&manifest, public_key)?;
@@ -595,13 +798,15 @@ pub async fn check_and_install_asset_update(app: AppHandle) -> Result<AssetUpdat
         }
     }
 
-    let pack_bytes = download_bytes(
-        &client,
-        &manifest.pack_url,
-        MAX_PACK_BYTES,
-        Some((&app, "assets")),
-    )
-    .await?;
+    let pack_url = match mirror_access.as_ref() {
+        Some(access) => mirrored_pack_url(access, &manifest.pack_url)?,
+        None => manifest.pack_url.clone(),
+    };
+    let pack_bytes = if mirror_access.is_some() {
+        download_bytes_ranged(&client, &pack_url, MAX_PACK_BYTES, Some((&app, "assets"))).await?
+    } else {
+        download_bytes(&client, &pack_url, MAX_PACK_BYTES, Some((&app, "assets"))).await?
+    };
     emit_update_progress(&app, "assets", "installing", 0, None);
     let actual_hash = format!("{:x}", Sha256::digest(&pack_bytes));
     if !actual_hash.eq_ignore_ascii_case(&manifest.sha256) {
@@ -677,6 +882,16 @@ mod tests {
 
         manifest.pack_url = "https://example.com/tampered.zip".to_string();
         assert!(verify_manifest(&manifest, &public_key).is_err());
+    }
+
+    #[test]
+    fn ranged_update_headers_are_parsed_strictly() {
+        assert_eq!(
+            parse_content_range("bytes 4194304-8388607/32762656"),
+            Some((4_194_304, 8_388_607, 32_762_656))
+        );
+        assert_eq!(parse_content_range("bytes */32762656"), None);
+        assert_eq!(parse_content_range("items 0-9/10"), None);
     }
 
     #[test]

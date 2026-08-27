@@ -1,6 +1,6 @@
 [package]
 name = "yier-bubu-desktop-pet"
-version = "0.5.20"
+version = "0.5.21"
 description = "一二与布布的双人私人桌宠"
 authors = ["一二与布布"]
 edition = "2021"
@@ -38,6 +38,7 @@ spake2 = "0.4"
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 futures-util = "0.3"
+minisign-verify = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 tokio = { version = "1", features = ["sync", "time"] }
 xcap = "0.9.8"
@@ -52,6 +53,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["N
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_SystemInformation",

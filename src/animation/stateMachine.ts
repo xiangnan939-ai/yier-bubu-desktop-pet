@@ -204,9 +204,12 @@ export class PetAnimationStateMachine {
     this.refreshMacroState();
     if (playing) {
       if (this.mode !== "interaction" && this.mode !== "dragging") this.beginMusic();
+    } else if (this.mode === "music") {
+      // Music is the one animation source that follows a live signal. Once
+      // silence is confirmed, invalidate the pending GIF-duration wait and
+      // return immediately instead of appearing to dance long after playback.
+      this.beginAmbient();
     }
-    // On stop, the active music operation is intentionally not cancelled. It
-    // finishes the current dance GIF cycle, then returns to ambient behavior.
   }
 
   private beginInteraction(action: "click" | "drop") {

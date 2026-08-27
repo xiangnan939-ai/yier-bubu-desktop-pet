@@ -939,10 +939,23 @@ function Pet() {
           if (distance < 5) return;
           button.dataset.dragging = "true";
           animationRef.current?.dispatch({ type: "drag_start" });
-          getCurrentWindow().startDragging().catch(() => undefined);
+          // On Windows the native drag loop takes pointer ownership, so WebView2
+          // does not reliably deliver pointerup/pointercancel back to this button.
+          // The Tauri promise settles when that native loop ends and is therefore
+          // the authoritative cross-platform drag-end signal.
+          getCurrentWindow().startDragging()
+            .catch(() => undefined)
+            .finally(() => {
+              if (button.dataset.dragging !== "true") return;
+              delete button.dataset.pointerX;
+              delete button.dataset.pointerY;
+              delete button.dataset.dragging;
+              animationRef.current?.dispatch({ type: "drag_end" });
+            });
         }}
         onPointerUp={(event) => {
           const button = event.currentTarget as HTMLButtonElement;
+          if (!button.dataset.pointerX && button.dataset.dragging !== "true") return;
           const dragged = button.dataset.dragging === "true";
           delete button.dataset.pointerX;
           delete button.dataset.pointerY;
@@ -955,6 +968,7 @@ function Pet() {
         }}
         onPointerCancel={(event) => {
           const button = event.currentTarget as HTMLButtonElement;
+          if (!button.dataset.pointerX && button.dataset.dragging !== "true") return;
           const dragged = button.dataset.dragging === "true";
           delete button.dataset.pointerX;
           delete button.dataset.pointerY;
