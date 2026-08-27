@@ -178,6 +178,33 @@ fn close_viewer_window(app: tauri::AppHandle, _session: Option<Value>) -> Result
     Ok(())
 }
 
+#[tauri::command]
+async fn wait_for_primary_mouse_release() {
+    #[cfg(target_os = "windows")]
+    {
+        use std::time::{Duration, Instant};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+
+        let is_pressed = || unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 };
+
+        // The WebView loses pointer ownership as soon as Tauri enters the
+        // native window-moving loop. Observe the physical button instead of
+        // relying on pointerup or on startDragging()'s Promise lifetime.
+        let pressed_deadline = Instant::now() + Duration::from_millis(300);
+        while !is_pressed() && Instant::now() < pressed_deadline {
+            tokio::time::sleep(Duration::from_millis(8)).await;
+        }
+        if !is_pressed() {
+            return;
+        }
+
+        let release_deadline = Instant::now() + Duration::from_secs(60);
+        while is_pressed() && Instant::now() < release_deadline {
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn platform_audio_playing() -> bool {
     use objc2_core_audio::{
@@ -542,6 +569,7 @@ pub fn run() {
             capture_screen_frame,
             ensure_screen_capture_permission,
             close_viewer_window,
+            wait_for_primary_mouse_release,
             system_audio_playing,
             system_idle_seconds,
             device_status,

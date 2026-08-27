@@ -771,6 +771,8 @@ impl BindingManager {
         let mut reply = None;
         let event = match signal.core.message_type.as_str() {
             "viewRequest" => "view-request",
+            "viewAnswer" => "view-answer",
+            "viewIce" => "view-ice",
             "viewStop" => "view-stop",
             "viewError" => "view-error",
             "unbindRequest" => {

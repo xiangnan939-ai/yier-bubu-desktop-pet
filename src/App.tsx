@@ -28,6 +28,7 @@ import {
   startScreenViewer,
   type SignedSignal,
   type ViewErrorPayload,
+  type ViewPeerSignal,
   type ViewSession,
 } from "./realtime";
 import "./App.css";
@@ -212,28 +213,45 @@ function Viewer() {
   const sessionRef = useRef<ViewSession | null>(null);
 
   useEffect(() => {
-    let closeViewer: (() => Promise<void>) | null = null;
+    let viewerConnection: Awaited<ReturnType<typeof startScreenViewer>> | null = null;
     let errorListener: (() => void) | null = null;
+    let peerListener: (() => void) | null = null;
+    const pendingSignals: ViewPeerSignal[] = [];
     listen<ViewErrorPayload>("viewer-error", (event) => {
       if (event.payload.sessionId !== sessionRef.current?.sessionId) return;
       setStatus(`连接失败：${event.payload.message}`);
       emitTo("main", "viewer-status", "failed").catch(() => undefined);
     }).then((dispose) => { errorListener = dispose; }).catch(() => undefined);
+    listen<ViewPeerSignal>("viewer-peer-signal", (event) => {
+      if (event.payload.session.sessionId !== sessionRef.current?.sessionId) return;
+      if (viewerConnection) viewerConnection.accept(event.payload).catch(() => undefined);
+      else pendingSignals.push(event.payload);
+    }).then((dispose) => { peerListener = dispose; }).catch(() => undefined);
     Promise.resolve().then(async () => {
       const session = loadViewSession();
       sessionRef.current = session;
       if (!stageRef.current) throw new Error("画面窗口尚未就绪");
-      closeViewer = await startScreenViewer(stageRef.current, session, (next) => {
-        setStatus(next);
-        if (next.startsWith("已连接")) emitTo("main", "viewer-status", "connected").catch(() => undefined);
-      });
+      viewerConnection = await startScreenViewer(
+        stageRef.current,
+        session,
+        (next) => {
+          setStatus(next);
+          if (next.startsWith("已连接")) emitTo("main", "viewer-status", "connected").catch(() => undefined);
+          else if (next.startsWith("连接失败") || next.startsWith("连接超时")) {
+            emitTo("main", "viewer-status", "failed").catch(() => undefined);
+          }
+        },
+        (signal) => emitTo("main", "viewer-peer-signal", signal),
+      );
+      for (const signal of pendingSignals.splice(0)) await viewerConnection.accept(signal);
     }).catch((reason) => {
       setStatus(`连接失败：${realtimeError(reason)}`);
       emitTo("main", "viewer-status", "failed").catch(() => undefined);
     });
     return () => {
       errorListener?.();
-      closeViewer?.().catch(() => undefined);
+      peerListener?.();
+      viewerConnection?.close().catch(() => undefined);
     };
   }, []);
 
@@ -754,6 +772,7 @@ function Pet() {
     try {
       const messaging = realtimeRef.current;
       if (!messaging) throw new Error("内置联网通道尚未启动");
+      await messaging.connect();
       const session = await createViewSession();
       attemptedSessionId = session.sessionId;
       localStorage.setItem(VIEW_SESSION_KEY, JSON.stringify(session));
@@ -784,11 +803,6 @@ function Pet() {
           reject(new Error(`无法创建远程画面窗口：${realtimeError(event.payload)}`));
         }).catch(reject);
       });
-      await messaging.connect();
-      const signal = await invoke<SignedSignal>("make_realtime_signal", {
-        messageType: "viewRequest", payload: session,
-      });
-      await messaging.send(signal);
     } catch (reason) {
       animationRef.current?.updateExternalState({ viewingRemote: false });
       if (attemptedSessionId) {
@@ -806,11 +820,14 @@ function Pet() {
     const publisher = new ScreenPublisher();
     publisherRef.current = publisher;
     const messaging = new RealtimeMessaging(async (result, signal) => {
-      const payload = signal.core.payload as Partial<ViewSession> | null;
+      const payload = signal.core.payload as Partial<ViewSession> | Partial<ViewPeerSignal> | null;
+      const peerSignal = payload as Partial<ViewPeerSignal> | null;
+      const session = peerSignal?.session as ViewSession | undefined;
       if (result.event === "view-request") {
-        if (!payload || typeof payload.sessionId !== "string" || !Number.isInteger(payload.roomId)
-          || typeof payload.createdAtMs !== "number") return;
-        const sessionId = payload.sessionId;
+        if (!session || typeof session.sessionId !== "string" || !Number.isInteger(session.roomId)
+          || typeof session.createdAtMs !== "number" || peerSignal?.kind !== "offer"
+          || peerSignal.description?.type !== "offer" || typeof peerSignal.description.sdp !== "string") return;
+        const sessionId = session.sessionId;
         const reportError = async (reason: unknown) => {
           const message = realtimeError(reason);
           console.error("无法启动桌面分享", reason);
@@ -820,8 +837,23 @@ function Pet() {
           });
           await messaging.send(errorSignal);
         };
-        await publisher.start(payload as ViewSession, reportError).catch(reportError);
-      } else if (result.event === "view-stop" && publisher.matches(payload?.sessionId)) {
+        const sendPeerSignal = async (next: ViewPeerSignal) => {
+          const outgoing = await invoke<SignedSignal>("make_realtime_signal", {
+            messageType: next.kind === "answer" ? "viewAnswer" : "viewIce",
+            payload: next,
+          });
+          await messaging.send(outgoing);
+        };
+        await publisher.start(session, peerSignal.description, sendPeerSignal, reportError).catch(reportError);
+      } else if (result.event === "view-answer" && session?.sessionId) {
+        await emitTo("viewer", "viewer-peer-signal", peerSignal as ViewPeerSignal).catch(() => undefined);
+      } else if (result.event === "view-ice" && session?.sessionId) {
+        if (publisher.matches(session.sessionId)) {
+          await publisher.addIceCandidate(peerSignal as ViewPeerSignal).catch(() => undefined);
+        } else {
+          await emitTo("viewer", "viewer-peer-signal", peerSignal as ViewPeerSignal).catch(() => undefined);
+        }
+      } else if (result.event === "view-stop" && publisher.matches((payload as Partial<ViewSession>)?.sessionId)) {
         await publisher.stop();
       } else if (result.event === "view-error") {
         const error = signal.core.payload as Partial<ViewErrorPayload> | null;
@@ -855,6 +887,22 @@ function Pet() {
     const signalListener = listen<SignedSignal>("send-realtime-signal", (event) => {
       messaging.send(event.payload).catch((reason) => console.error("联网消息发送失败", reason));
     });
+    const viewerPeerListener = listen<ViewPeerSignal>("viewer-peer-signal", async (event) => {
+      const next = event.payload;
+      if (!next?.session?.sessionId || (next.kind !== "offer" && next.kind !== "ice")) return;
+      try {
+        const outgoing = await invoke<SignedSignal>("make_realtime_signal", {
+          messageType: next.kind === "offer" ? "viewRequest" : "viewIce",
+          payload: next,
+        });
+        await messaging.send(outgoing);
+      } catch (reason) {
+        await emitTo("viewer", "viewer-error", {
+          sessionId: next.session.sessionId,
+          message: realtimeError(reason),
+        } satisfies ViewErrorPayload).catch(() => undefined);
+      }
+    });
     const viewerStopListener = listen<ViewSession>("viewer-stop-request", async (event) => {
       const session = event.payload;
       if (!session || typeof session.sessionId !== "string") return;
@@ -871,6 +919,7 @@ function Pet() {
     return () => {
       window.clearInterval(refreshTimer);
       signalListener.then((dispose) => dispose()).catch(() => undefined);
+      viewerPeerListener.then((dispose) => dispose()).catch(() => undefined);
       viewerStopListener.then((dispose) => dispose()).catch(() => undefined);
       bindingListener.then((dispose) => dispose()).catch(() => undefined);
       publisher.stop().catch(() => undefined);
@@ -908,7 +957,8 @@ function Pet() {
       new WebviewWindow("pet-menu", {
         url: "/?mode=menu", title: "桌宠菜单", width: MENU_WIDTH, height: MENU_HEIGHT,
         x: position?.x, y: position?.y, decorations: false, transparent: true,
-        alwaysOnTop: true, skipTaskbar: true, shadow: false, resizable: false,
+        backgroundColor: [0, 0, 0, 0], alwaysOnTop: true, skipTaskbar: true,
+        shadow: false, resizable: false,
       });
     } catch {
       await openSettings();
@@ -939,19 +989,22 @@ function Pet() {
           if (distance < 5) return;
           button.dataset.dragging = "true";
           animationRef.current?.dispatch({ type: "drag_start" });
-          // On Windows the native drag loop takes pointer ownership, so WebView2
-          // does not reliably deliver pointerup/pointercancel back to this button.
-          // The Tauri promise settles when that native loop ends and is therefore
-          // the authoritative cross-platform drag-end signal.
-          getCurrentWindow().startDragging()
-            .catch(() => undefined)
-            .finally(() => {
-              if (button.dataset.dragging !== "true") return;
-              delete button.dataset.pointerX;
-              delete button.dataset.pointerY;
-              delete button.dataset.dragging;
-              animationRef.current?.dispatch({ type: "drag_end" });
-            });
+          const finishDrag = () => {
+            if (button.dataset.dragging !== "true") return;
+            delete button.dataset.pointerX;
+            delete button.dataset.pointerY;
+            delete button.dataset.dragging;
+            animationRef.current?.dispatch({ type: "drag_end" });
+          };
+          // WebView2 gives pointer ownership to the native move loop and often
+          // never emits pointerup. On Windows, watch the physical left button;
+          // startDragging() itself can resolve before the mouse is released.
+          if (profile.platform === "windows") {
+            invoke("wait_for_primary_mouse_release")
+              .then(finishDrag)
+              .catch(finishDrag);
+          }
+          getCurrentWindow().startDragging().catch(finishDrag);
         }}
         onPointerUp={(event) => {
           const button = event.currentTarget as HTMLButtonElement;

@@ -1,12 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ChatSDK, Message } from "@tencentcloud/chat";
-import type TRTC from "trtc-sdk-v5";
-
-let trtcModule: Promise<typeof import("trtc-sdk-v5")["default"]> | null = null;
-function loadTRTC() {
-  trtcModule ??= import("trtc-sdk-v5").then((module) => module.default);
-  return trtcModule;
-}
 
 type ChatNamespace = typeof import("@tencentcloud/chat")["default"];
 let chatModule: Promise<ChatNamespace> | null = null;
@@ -45,7 +38,20 @@ export type SignalProcessResult = {
 
 export type ViewSession = { sessionId: string; roomId: number; createdAtMs: number };
 export type ViewErrorPayload = { sessionId: string; message: string };
+export type ViewPeerSignal = {
+  session: ViewSession;
+  kind: "offer" | "answer" | "ice";
+  description?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
+};
 export const VIEW_SESSION_KEY = "yier-bubu-view-session";
+
+const PEER_CONFIGURATION: RTCConfiguration = {
+  iceServers: [
+    { urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:53"] },
+  ],
+  iceCandidatePoolSize: 4,
+};
 
 type SignalHandler = (result: SignalProcessResult, signal: SignedSignal) => void | Promise<void>;
 
@@ -225,14 +231,19 @@ function frameBytes(value: unknown): Uint8Array {
 }
 
 export class ScreenPublisher {
-  private trtc: TRTC | null = null;
+  private peer: RTCPeerConnection | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private track: MediaStreamTrack | null = null;
   private stopped = true;
   private session: ViewSession | null = null;
   private safetyTimer = 0;
 
-  async start(session: ViewSession, onError?: (message: string) => void | Promise<void>) {
+  async start(
+    session: ViewSession,
+    offer: RTCSessionDescriptionInit,
+    onSignal: (signal: ViewPeerSignal) => void | Promise<void>,
+    onError?: (message: string) => void | Promise<void>,
+  ) {
     if (this.session?.sessionId === session.sessionId && !this.stopped) return;
     await this.stop();
     this.stopped = false;
@@ -240,8 +251,6 @@ export class ScreenPublisher {
     try {
       await invoke("ensure_screen_capture_permission");
       await invoke("set_screen_share_active", { active: true });
-      const credentials = await invoke<RealtimeCredentials>("realtime_credentials", { forceRefresh: false });
-      const TRTCClass = await loadTRTC();
       const canvas = document.createElement("canvas");
       canvas.width = 1280;
       canvas.height = 720;
@@ -252,37 +261,37 @@ export class ScreenPublisher {
       const track = stream.getVideoTracks()[0];
       if (!track) throw new Error("当前系统无法创建内置画面通道");
       this.track = track;
-      const trtc = TRTCClass.create();
-      this.trtc = trtc;
-      let viewerJoined = false;
-      trtc.on(TRTCClass.EVENT.REMOTE_USER_ENTER, ({ userId }) => {
-        if (userId !== credentials.partnerUserId) return;
-        viewerJoined = true;
-        window.clearTimeout(this.safetyTimer);
-        this.safetyTimer = window.setTimeout(() => this.stop(), 30 * 60_000);
-      });
-      trtc.on(TRTCClass.EVENT.REMOTE_USER_EXIT, ({ userId }) => {
-        if (viewerJoined && userId === credentials.partnerUserId) this.stop().catch(() => undefined);
-      });
-      await trtc.enterRoom({
-        roomId: session.roomId,
-        sdkAppId: credentials.sdkAppId,
-        userId: credentials.userId,
-        userSig: credentials.userSig,
-        autoReceiveAudio: false,
-        autoReceiveVideo: false,
-        enableAutoPlayDialog: false,
-      });
-      await trtc.startLocalVideo({
-        publish: true,
-        option: {
-          videoTrack: track,
-          mirror: false,
-          fillMode: "contain",
-          profile: { width: 1280, height: 720, frameRate: 10, bitrate: 1200 },
-          qosPreference: TRTCClass.TYPE.QOS_PREFERENCE_SMOOTH,
-        },
-      });
+      const peer = new RTCPeerConnection(PEER_CONFIGURATION);
+      this.peer = peer;
+      let answerSent = false;
+      const queuedCandidates: RTCIceCandidateInit[] = [];
+      peer.addTrack(track, stream);
+      peer.onicecandidate = (event) => {
+        if (!event.candidate || this.stopped || !this.matches(session.sessionId)) return;
+        const candidate = event.candidate.toJSON();
+        if (!answerSent) {
+          queuedCandidates.push(candidate);
+          return;
+        }
+        void Promise.resolve(onSignal({ session, kind: "ice", candidate })).catch(() => undefined);
+      };
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === "connected") {
+          window.clearTimeout(this.safetyTimer);
+          this.safetyTimer = window.setTimeout(() => this.stop(), 30 * 60_000);
+        } else if (peer.connectionState === "failed" && !this.stopped) {
+          void this.stop().then(() => onError?.("点对点画面通道连接失败，请检查两台电脑的网络后重试"));
+        }
+      };
+      await peer.setRemoteDescription(offer);
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      if (!peer.localDescription) throw new Error("无法生成点对点画面响应");
+      await onSignal({ session, kind: "answer", description: peer.localDescription.toJSON() });
+      answerSent = true;
+      for (const candidate of queuedCandidates.splice(0)) {
+        await onSignal({ session, kind: "ice", candidate });
+      }
       this.drawFrames().catch(async (reason) => {
         const message = reasonText(reason);
         await this.stop().catch(() => undefined);
@@ -293,10 +302,7 @@ export class ScreenPublisher {
         }
       });
       window.clearTimeout(this.safetyTimer);
-      this.safetyTimer = window.setTimeout(
-        () => this.stop().catch(() => undefined),
-        viewerJoined ? 30 * 60_000 : 30_000,
-      );
+      this.safetyTimer = window.setTimeout(() => this.stop().catch(() => undefined), 45_000);
     } catch (reason) {
       await this.stop();
       throw new Error(`无法分享桌面：${reasonText(reason)}`);
@@ -327,16 +333,21 @@ export class ScreenPublisher {
     return typeof sessionId === "string" && this.session?.sessionId === sessionId;
   }
 
+  async addIceCandidate(signal: ViewPeerSignal) {
+    if (!this.matches(signal.session.sessionId) || !this.peer || !signal.candidate) return;
+    await this.peer.addIceCandidate(signal.candidate);
+  }
+
   async stop() {
     this.stopped = true;
     window.clearTimeout(this.safetyTimer);
     this.safetyTimer = 0;
     this.session = null;
-    if (this.trtc) {
-      await this.trtc.stopLocalVideo().catch(() => undefined);
-      await this.trtc.exitRoom().catch(() => undefined);
-      this.trtc.destroy();
-      this.trtc = null;
+    if (this.peer) {
+      this.peer.onicecandidate = null;
+      this.peer.onconnectionstatechange = null;
+      this.peer.close();
+      this.peer = null;
     }
     this.track?.stop();
     this.track = null;
@@ -370,48 +381,109 @@ export async function startScreenViewer(
   target: HTMLElement,
   session: ViewSession,
   onStatus: (status: string) => void,
+  onSignal: (signal: ViewPeerSignal) => void | Promise<void>,
 ) {
-  const credentials = await invoke<RealtimeCredentials>("realtime_credentials", { forceRefresh: false });
-  const TRTCClass = await loadTRTC();
-  const trtc = TRTCClass.create();
+  const peer = new RTCPeerConnection(PEER_CONFIGURATION);
   let playing = false;
+  let stopped = false;
+  let frameRequest = 0;
+  let video: HTMLVideoElement | null = null;
+  let offerSent = false;
+  const queuedCandidates: RTCIceCandidateInit[] = [];
+  const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   const availabilityTimer = window.setTimeout(() => {
     if (!playing) onStatus("连接超时：未收到对方画面，请确认对方电脑已开机且桌宠正在运行");
   }, 25_000);
-  trtc.on(TRTCClass.EVENT.REMOTE_VIDEO_AVAILABLE, async ({ userId, streamType }) => {
-    if (userId !== credentials.partnerUserId || playing) return;
+  peer.onicecandidate = (event) => {
+    if (!event.candidate || stopped) return;
+    const candidate = event.candidate.toJSON();
+    if (!offerSent) {
+      queuedCandidates.push(candidate);
+      return;
+    }
+    void Promise.resolve(onSignal({ session, kind: "ice", candidate })).catch(() => undefined);
+  };
+  peer.onconnectionstatechange = () => {
+    if (peer.connectionState === "failed") {
+      onStatus("连接失败：当前网络无法建立点对点画面通道");
+    } else if (peer.connectionState === "disconnected" && playing) {
+      onStatus("连接中断，正在等待网络恢复…");
+    }
+  };
+  peer.ontrack = async (event) => {
+    if (playing || stopped || event.track.kind !== "video") return;
     playing = true;
     window.clearTimeout(availabilityTimer);
-    target.querySelector(".viewer-placeholder")?.remove();
-    await trtc.startRemoteVideo({
-      userId,
-      streamType,
-      view: target,
-      option: {
-        fillMode: "contain",
-        // WebView2 can promote a <video> into a native hardware overlay. In a
-        // transparent multi-window desktop app that overlay may cover the
-        // complete client area and appear as a white window. Canvas rendering
-        // keeps the remote frame inside the viewer stage on both platforms.
-        canvasRender: true,
-      },
-    });
-    onStatus("已连接 · 双向设备签名认证 · 只读实时画面");
-  });
-  await trtc.enterRoom({
-    roomId: session.roomId,
-    sdkAppId: credentials.sdkAppId,
-    userId: credentials.userId,
-    userSig: credentials.userSig,
-    autoReceiveAudio: false,
-    autoReceiveVideo: false,
-    enableAutoPlayDialog: false,
-  });
-  onStatus("已进入安全房间，正在等待对方画面…");
-  return async () => {
-    window.clearTimeout(availabilityTimer);
-    await trtc.exitRoom().catch(() => undefined);
-    trtc.destroy();
+    target.replaceChildren();
+    video = document.createElement("video");
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.style.display = "none";
+    video.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+    const canvas = document.createElement("canvas");
+    canvas.className = "viewer-canvas";
+    target.append(video, canvas);
+    await video.play();
+    const draw = () => {
+      if (stopped || !video) return;
+      const width = Math.max(1, target.clientWidth);
+      const height = Math.max(1, target.clientHeight);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const context = canvas.getContext("2d", { alpha: false });
+      if (context && video.videoWidth > 0 && video.videoHeight > 0) {
+        context.fillStyle = "#111";
+        context.fillRect(0, 0, width, height);
+        const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
+        const drawWidth = video.videoWidth * scale;
+        const drawHeight = video.videoHeight * scale;
+        context.drawImage(video, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+      }
+      frameRequest = window.requestAnimationFrame(draw);
+    };
+    draw();
+    onStatus("已连接 · 双向设备签名认证 · 点对点加密画面");
+  };
+  peer.addTransceiver("video", { direction: "recvonly" });
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  if (!peer.localDescription) throw new Error("无法生成点对点画面请求");
+  await onSignal({ session, kind: "offer", description: peer.localDescription.toJSON() });
+  offerSent = true;
+  for (const candidate of queuedCandidates.splice(0)) {
+    await onSignal({ session, kind: "ice", candidate });
+  }
+  onStatus("已发出安全查看请求，正在建立点对点画面…");
+  return {
+    async accept(signal: ViewPeerSignal) {
+      if (signal.session.sessionId !== session.sessionId || stopped) return;
+      if (signal.kind === "answer" && signal.description) {
+        await peer.setRemoteDescription(signal.description);
+        for (const candidate of pendingRemoteCandidates.splice(0)) {
+          await peer.addIceCandidate(candidate);
+        }
+      } else if (signal.kind === "ice" && signal.candidate) {
+        if (peer.remoteDescription) await peer.addIceCandidate(signal.candidate);
+        else pendingRemoteCandidates.push(signal.candidate);
+      }
+    },
+    async close() {
+      stopped = true;
+      window.cancelAnimationFrame(frameRequest);
+      peer.onicecandidate = null;
+      peer.onconnectionstatechange = null;
+      peer.ontrack = null;
+      peer.close();
+      if (video) {
+        (video.srcObject as MediaStream | null)?.getTracks().forEach((track) => track.stop());
+        video.srcObject = null;
+      }
+      target.replaceChildren();
+      window.clearTimeout(availabilityTimer);
+    },
   };
 }
 
