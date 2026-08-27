@@ -114,6 +114,7 @@ pub struct BindingStatus {
     pub pet_name: String,
     pub partner_name: String,
     pub binding_id: Option<String>,
+    pub signaling_route: Option<String>,
     pub partner_user_id: Option<String>,
     pub partner_machine_code: Option<String>,
     pub created_at_ms: Option<u64>,
@@ -234,6 +235,9 @@ impl BindingManager {
             pet_name: local_pet_name().into(),
             partner_name: partner_pet_name().into(),
             binding_id: record.map(|value| value.core.binding_id.clone()),
+            signaling_route: record.map(|value| {
+                short_hash(&format!("yier-bubu-mqtt-v1|{}", value.core.binding_id), 64)
+            }),
             partner_user_id: record.map(|value| signaling_user_id(&value.core, partner_role())),
             partner_machine_code: partner.map(|value| short_code(&value.machine_fingerprint)),
             created_at_ms: record.map(|value| value.core.created_at_ms),

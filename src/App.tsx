@@ -42,6 +42,7 @@ type BindingStatus = {
   petName: string;
   partnerName: string;
   bindingId: string | null;
+  signalingRoute: string | null;
   partnerUserId: string | null;
   partnerMachineCode: string | null;
   createdAtMs: number | null;

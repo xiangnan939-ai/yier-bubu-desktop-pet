@@ -1,9 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { MqttClient } from "mqtt";
 
-let mqttModule: Promise<typeof import("mqtt")> | null = null;
+type MqttModule = typeof import("mqtt");
+let mqttModule: Promise<MqttModule> | null = null;
 function loadMqtt() {
-  mqttModule ??= import("mqtt");
+  mqttModule ??= import("mqtt").then((module) => {
+    if (typeof module.connect === "function") return module;
+    const fallback = (module as unknown as { default?: MqttModule }).default;
+    if (fallback && typeof fallback.connect === "function") return fallback;
+    throw new Error("MQTT 客户端模块未正确加载");
+  });
   return mqttModule;
 }
 
@@ -58,6 +64,7 @@ const SIGNAL_BROKERS = [
 
 type RealtimeRoute = {
   bindingId: string | null;
+  signalingRoute: string | null;
   state: string;
 };
 
@@ -65,20 +72,15 @@ type RealtimeProfile = {
   role: "yier" | "bubu";
 };
 
-async function sha256Hex(value: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 function firstSuccessful(operations: Promise<void>[]) {
   return new Promise<void>((resolve, reject) => {
     let failures = 0;
+    const reasons: string[] = [];
     for (const operation of operations) {
-      operation.then(resolve).catch(() => {
+      operation.then(resolve).catch((reason) => {
+        reasons.push(reasonText(reason));
         failures += 1;
-        if (failures === operations.length) reject(new Error("全部节点均连接失败"));
+        if (failures === operations.length) reject(new Error(reasons.join("；")));
       });
     }
   });
@@ -118,10 +120,11 @@ export class RealtimeMessaging {
         invoke<RealtimeRoute>("binding_status"),
         invoke<RealtimeProfile>("app_profile"),
       ]);
-      if ((binding.state !== "bound" && binding.state !== "revoking") || !binding.bindingId) {
+      if ((binding.state !== "bound" && binding.state !== "revoking")
+        || !binding.bindingId || !binding.signalingRoute) {
         throw new Error("双机尚未完成安全绑定");
       }
-      const routeHash = await sha256Hex(`yier-bubu-mqtt-v1|${binding.bindingId}`);
+      const routeHash = binding.signalingRoute;
       const partnerRole = profile.role === "yier" ? "bubu" : "yier";
       const base = `yier-bubu/v1/${routeHash}`;
       this.inboundTopic = `${base}/${profile.role}/+`;
@@ -133,9 +136,9 @@ export class RealtimeMessaging {
     try {
       await firstSuccessful(attempts);
       this.ready = true;
-    } catch {
+    } catch (reason) {
       await this.close();
-      throw new Error("免费双机信令节点暂时无法连接，请检查网络后重试");
+      throw new Error(`免费双机信令节点暂时无法连接：${reasonText(reason)}`);
     }
   }
 
