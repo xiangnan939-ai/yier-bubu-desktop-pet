@@ -66,11 +66,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           YIER_BUBU_APP_UPDATE_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
           YIER_BUBU_APP_UPDATE_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
-          YIER_BUBU_ASSET_MANIFEST_URL: https://github.com/${{ github.repository }}/releases/latest/download/asset-manifest.json
-          YIER_BUBU_ASSET_PUBLIC_KEY: ${{ vars.ASSET_UPDATE_PUBLIC_KEY }}
-          YIER_BUBU_REALTIME_ENDPOINTS: ${{ vars.YIER_BUBU_REALTIME_ENDPOINTS }}
-          YIER_BUBU_REALTIME_CONFIG_URL: https://api.github.com/repos/${{ github.repository }}/contents/realtime.json?ref=runtime-config
-          YIER_BUBU_REALTIME_PROJECT_HOST: yier-bubu-private-realtime-btqjaq8u.edgeone.dev
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "一二布布私人桌宠 ${{ github.ref_name }}"
@@ -114,18 +109,17 @@ jobs:
             "yier-bubu_${VERSION}_x64-setup.exe" \
             "yier-bubu_${VERSION}_x64-setup.exe.sig" --clobber
 
-  publish-assets:
+  publish-release:
     needs: build-app
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      YIER_BUBU_ASSET_PRIVATE_KEY: ${{ secrets.ASSET_UPDATE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: 生成并签名素材包
+      - name: 生成程序更新清单
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#app-v}"
@@ -136,14 +130,8 @@ jobs:
             --dir release-assets/updater-signatures
           node scripts/make-updater-json.mjs \
             "$VERSION" release-assets/updater-signatures "$BASE_URL" release-assets/latest.json
-          python3 scripts/make-asset-pack.py --version "$VERSION" --base-url "$BASE_URL" --output release-assets
-          node scripts/sign-asset-manifest.mjs release-assets/asset-manifest.unsigned.json release-assets/asset-manifest.json
-          test "$(tr -d '\r\n' < release-assets/asset-manifest.json.public-key.txt)" = "${{ vars.ASSET_UPDATE_PUBLIC_KEY }}"
-      - name: 上传素材并公开发布
+      - name: 上传更新清单并公开发布
         shell: bash
         run: |
-          gh release upload "$GITHUB_REF_NAME" \
-            release-assets/character-assets-*.zip \
-            release-assets/asset-manifest.json \
-            release-assets/latest.json --clobber
+          gh release upload "$GITHUB_REF_NAME" release-assets/latest.json --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false

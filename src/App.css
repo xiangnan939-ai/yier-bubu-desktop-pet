@@ -86,7 +86,6 @@ button, input { font: inherit; }
 .binding-shell button.wide { width: 100%; }
 .binding-shell button:disabled { cursor: default; opacity: .6; }
 .binding-shell .binding-message { min-height: 38px; margin-top: 11px; color: #9b5d63; }
-.binding-shell button.tailscale-help { padding: 3px 7px; color: #b65261; background: transparent; text-decoration: underline; }
 .binding-shell .binding-hint { margin-top: 4px; color: #a08a81; font-size: 10px; }
 .pairing-code { width: 100%; margin: 2px 0 10px; padding: 13px 8px; border: 1px solid #e7c8c8; border-radius: 11px; color: #a74f5d; background: #fff; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 20px; font-weight: 800; letter-spacing: 1.2px; user-select: all; }
 

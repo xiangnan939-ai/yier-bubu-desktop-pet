@@ -10,8 +10,9 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hmac::{Hmac, Mac};
 use rand_core::OsRng;
+use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS, Transport};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use tauri::{AppHandle, Emitter};
@@ -20,18 +21,12 @@ use uuid::Uuid;
 
 const KEYRING_SERVICE: &str = "com.yierbubu.desktop-pet";
 const STATE_FILE: &str = "private-binding.json";
-const CREDENTIAL_FILE: &str = "realtime-credentials.json";
-#[cfg(not(target_os = "macos"))]
-const CREDENTIAL_KEYRING_USER: &str = "realtime-credentials";
 const SIGNING_KEY_FILE: &str = "device-signing-key-v1";
 const PAIRING_LIFETIME: Duration = Duration::from_secs(180);
 const REQUEST_LIFETIME: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const SIGNAL_LIFETIME: Duration = Duration::from_secs(120);
 const SPAKE_MAC_ID: &[u8] = b"yier-bubu/mac/cloud-v2";
 const SPAKE_WINDOWS_ID: &[u8] = b"yier-bubu/windows/cloud-v2";
-const ENDPOINTS: Option<&str> = option_env!("YIER_BUBU_REALTIME_ENDPOINTS");
-const RUNTIME_CONFIG_URL: Option<&str> = option_env!("YIER_BUBU_REALTIME_CONFIG_URL");
-const RUNTIME_PROJECT_HOST: Option<&str> = option_env!("YIER_BUBU_REALTIME_PROJECT_HOST");
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -46,12 +41,6 @@ pub struct DeviceEnrollment {
     #[serde(default)]
     pub signaling_user_id: String,
     pub machine_fingerprint: String,
-    // Kept only so v0.3.x binding files can be read and upgraded without a
-    // unilateral local reset. New cloud bindings leave these fields empty.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub tailscale_stable_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub tailscale_host: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,27 +59,6 @@ pub struct BindingRecord {
     pub core: BindingCore,
     pub mac_signature: String,
     pub windows_signature: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyDeviceEnrollment<'a> {
-    role: &'a str,
-    pet_name: &'a str,
-    public_key: &'a str,
-    tailscale_stable_id: &'a str,
-    tailscale_host: &'a str,
-    machine_fingerprint: &'a str,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyBindingCore<'a> {
-    version: u8,
-    binding_id: &'a str,
-    created_at_ms: u64,
-    mac: LegacyDeviceEnrollment<'a>,
-    windows: LegacyDeviceEnrollment<'a>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,59 +147,11 @@ struct PairEnrollment {
     mac: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PairExchangeRequest<'a, T> {
-    channel: &'a str,
-    phase: &'a str,
-    role: &'a str,
-    payload: &'a T,
+struct PairExchangeEnvelope<T> {
+    payload: T,
     timestamp_ms: u64,
-    owner_authorization: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeEndpointConfig {
-    endpoint: String,
-    expires_at_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubContentResponse {
-    content: String,
-    encoding: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PairExchangeResponse<T> {
-    peer_payload: Option<T>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BindingRecoveryProof {
-    role: String,
-    public_key: String,
-    nonce: String,
-    timestamp_ms: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BindingRecoveryRequest<'a> {
-    action: &'a str,
-    record: Option<&'a BindingRecord>,
-    proof: &'a BindingRecoveryProof,
-    signature: &'a str,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BindingRecoveryResponse {
-    state: String,
-    record: Option<BindingRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -263,41 +183,10 @@ pub struct SignalProcessResult {
     pub reply: Option<SignedSignal>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialRequestCore {
-    binding_id: String,
-    role: String,
-    public_key: String,
-    nonce: String,
-    timestamp_ms: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialRequest {
-    record: BindingRecord,
-    request: CredentialRequestCore,
-    signature: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RealtimeCredentials {
-    pub sdk_app_id: u32,
-    pub user_id: String,
-    pub partner_user_id: String,
-    pub user_sig: String,
-    pub expires_at_ms: u64,
-    #[serde(default)]
-    pub endpoint: String,
-}
-
 #[derive(Clone)]
 pub struct BindingManager {
     app: AppHandle,
     state_path: PathBuf,
-    credential_path: PathBuf,
     state: Arc<RwLock<PersistedBinding>>,
     seen_signal_nonces: Arc<Mutex<HashMap<String, u64>>>,
     signing_key: Arc<SigningKey>,
@@ -316,7 +205,6 @@ impl BindingManager {
         };
         Ok(Self {
             app,
-            credential_path: app_data_dir.join(CREDENTIAL_FILE),
             state_path,
             state: Arc::new(RwLock::new(state)),
             seen_signal_nonces: Arc::new(Mutex::new(HashMap::new())),
@@ -362,7 +250,7 @@ impl BindingManager {
                 (request.core.expires_at_ms >= now_ms())
                     .then(|| pet_name_for_role(&request.core.requested_by).to_string())
             }),
-            realtime_configured: realtime_service_available(),
+            realtime_configured: true,
             local_public_key: self.public_key(),
         }
     }
@@ -371,9 +259,6 @@ impl BindingManager {
         let passphrase = normalize_pairing_code(&passphrase);
         if passphrase.len() != 16 {
             return Err("请输入 Mac 生成的完整 16 位配对码".into());
-        }
-        if !realtime_service_available() {
-            return Err("联网服务尚未写入这个安装包，请先安装正式发布版".into());
         }
         {
             let state = self.state.read().await;
@@ -480,85 +365,6 @@ impl BindingManager {
         })
     }
 
-    pub async fn sync_binding_recovery(&self) -> Result<PairingResult, String> {
-        let local_record = {
-            let state = self.state.read().await;
-            if state.revoked {
-                return Err("当前绑定已经解除".into());
-            }
-            state.record.clone()
-        };
-        let action = if local_record.is_some() {
-            "upload"
-        } else if self.role() == "bubu" {
-            "download"
-        } else {
-            return Ok(PairingResult {
-                state: "unbound".into(),
-                message: "请在 Mac 生成配对码".into(),
-            });
-        };
-        if let Some(record) = local_record.as_ref() {
-            self.verify_complete_record(record)?;
-            self.ensure_local_machine(record)?;
-        }
-
-        let proof = BindingRecoveryProof {
-            role: self.role().into(),
-            public_key: self.public_key(),
-            nonce: Uuid::new_v4().to_string(),
-            timestamp_ms: now_ms(),
-        };
-        let signature = self.sign_bytes(&binding_recovery_proof_bytes(&proof));
-        let request = BindingRecoveryRequest {
-            action,
-            record: local_record.as_ref(),
-            proof: &proof,
-            signature: &signature,
-        };
-        let client = short_http_client()?;
-        let mut errors = Vec::new();
-        for endpoint in resolved_endpoints(&client).await {
-            let url = match endpoint_request_url(&endpoint, "/api/recover") {
-                Ok(value) => value,
-                Err(error) => {
-                    errors.push(error);
-                    continue;
-                }
-            };
-            match post_protected_json(&client, url, &request).await {
-                Ok(response) if response.status().is_success() => {
-                    let response: BindingRecoveryResponse =
-                        response.json().await.map_err(|error| error.to_string())?;
-                    if action == "upload" {
-                        return Ok(PairingResult {
-                            state: "bound".into(),
-                            message: "绑定记录已安全同步".into(),
-                        });
-                    }
-                    let record = response
-                        .record
-                        .ok_or_else(|| "云端没有返回绑定恢复记录".to_string())?;
-                    self.verify_complete_record(&record)?;
-                    self.ensure_local_machine(&record)?;
-                    self.replace_with_record(record).await?;
-                    return Ok(PairingResult {
-                        state: response.state,
-                        message: format!("已恢复我的{}绑定", local_pet_name()),
-                    });
-                }
-                Ok(response) => errors.push(
-                    response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "绑定恢复服务返回错误".into()),
-                ),
-                Err(error) => errors.push(error.to_string()),
-            }
-        }
-        Err(format!("暂时无法同步绑定记录：{}", errors.join("；")))
-    }
-
     async fn exchange_pair<T>(
         &self,
         channel: &str,
@@ -567,139 +373,45 @@ impl BindingManager {
         waiting: &str,
     ) -> Result<T, String>
     where
-        T: Serialize + for<'de> Deserialize<'de> + Clone,
+        T: Serialize + for<'de> Deserialize<'de> + Clone + Send + 'static,
     {
         let deadline = now_ms() + PAIRING_LIFETIME.as_millis() as u64;
-        let client = short_http_client()?;
-        let endpoints = resolved_endpoints(&client).await;
-        if endpoints.is_empty() {
-            return Err("暂时无法读取联网服务入口，请检查网络后重试".into());
-        }
-        let mut last_error = waiting.to_string();
-        while now_ms() < deadline {
-            for endpoint in &endpoints {
-                let request = PairExchangeRequest {
-                    channel,
-                    phase,
-                    role: self.role(),
-                    payload,
-                    timestamp_ms: now_ms(),
-                    owner_authorization: (self.role() == "yier")
-                        .then(|| self.sign_bytes(&pair_channel_authorization_bytes(channel))),
-                };
-                let Ok(url) = endpoint_request_url(endpoint, "/api/pair") else {
-                    continue;
-                };
-                match post_protected_json(&client, url, &request).await {
-                    Ok(response) if response.status().is_success() => {
-                        let value: PairExchangeResponse<T> =
-                            response.json().await.map_err(|error| error.to_string())?;
-                        if let Some(peer) = value.peer_payload {
-                            return Ok(peer);
-                        }
-                    }
-                    Ok(response) => {
-                        last_error = response
-                            .text()
-                            .await
-                            .unwrap_or_else(|_| "绑定服务拒绝了请求".into());
-                    }
-                    Err(error) => last_error = error.to_string(),
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(900)).await;
-        }
-        Err(format!("绑定超时：{last_error}"))
-    }
-
-    pub async fn credentials(&self, force_refresh: bool) -> Result<RealtimeCredentials, String> {
-        let record = self.active_record().await?;
-        self.ensure_local_machine(&record)?;
-        if !force_refresh {
-            if let Ok(Some(cached)) = self.read_cached_credentials() {
-                if cached.expires_at_ms > now_ms() + 48 * 60 * 60 * 1_000 {
-                    return Ok(cached);
-                }
-            }
-        }
-        let request_core = CredentialRequestCore {
-            binding_id: record.core.binding_id.clone(),
-            role: self.role().into(),
-            public_key: self.public_key(),
-            nonce: Uuid::new_v4().to_string(),
+        let own_role = self.role().to_string();
+        let peer_role = partner_role().to_string();
+        let envelope = PairExchangeEnvelope {
+            payload: payload.clone(),
             timestamp_ms: now_ms(),
         };
-        let request = CredentialRequest {
-            signature: self.sign_bytes(&credential_request_bytes(&request_core)),
-            request: request_core,
-            record,
-        };
-        let client = short_http_client()?;
-        let mut errors = Vec::new();
-        for endpoint in resolved_endpoints(&client).await {
-            let url = match endpoint_request_url(&endpoint, "/api/credentials") {
-                Ok(value) => value,
-                Err(error) => {
-                    errors.push(error);
-                    continue;
-                }
-            };
-            let mut endpoint_error = "凭证服务暂时不可用".to_string();
-            for attempt in 0..3 {
-                match post_protected_json(&client, url.clone(), &request).await {
-                    Ok(response) if response.status().is_success() => {
-                        let status = response.status();
-                        let content_type = response
-                            .headers()
-                            .get(reqwest::header::CONTENT_TYPE)
-                            .and_then(|value| value.to_str().ok())
-                            .unwrap_or("")
-                            .to_string();
-                        let content_encoding = response
-                            .headers()
-                            .get(reqwest::header::CONTENT_ENCODING)
-                            .and_then(|value| value.to_str().ok())
-                            .unwrap_or("")
-                            .to_string();
-                        match response.bytes().await {
-                            Ok(bytes) => match serde_json::from_slice::<RealtimeCredentials>(&bytes) {
-                                Ok(mut value) => {
-                                    // The renderer never needs the EdgeOne access token. Keep it confined to
-                                    // this Rust request and only expose the sanitized project origin.
-                                    value.endpoint = runtime_api_base(&endpoint).unwrap_or(endpoint);
-                                    // A temporary credential is still safe to use if the OS keyring is
-                                    // unavailable. Cache failures must not disable the live connection.
-                                    let _ = self.write_cached_credentials(&value);
-                                    return Ok(value);
-                                }
-                                Err(error) => endpoint_error = format!(
-                                    "联网凭证响应解析失败（状态 {status}，类型 {content_type}，编码 {content_encoding}，{} 字节）：{error}",
-                                    bytes.len()
-                                ),
-                            },
-                            Err(error) => endpoint_error = error.to_string(),
-                        }
-                    }
-                    Ok(response) => {
-                        endpoint_error = response
-                            .text()
-                            .await
-                            .unwrap_or_else(|_| "凭证服务返回错误".into());
-                    }
-                    Err(error) => endpoint_error = error.to_string(),
-                }
-                if attempt < 2 {
-                    tokio::time::sleep(Duration::from_millis(450 * (attempt + 1))).await;
-                }
-            }
-            errors.push(endpoint_error);
+        let outbound = format!("yier-bubu/pair/v3/{channel}/{phase}/{own_role}");
+        let inbound = format!("yier-bubu/pair/v3/{channel}/{phase}/{peer_role}");
+        let encoded = serde_json::to_vec(&envelope).map_err(|error| error.to_string())?;
+        let primary = mqtt_pair_exchange::<T>(
+            "broker.emqx.io",
+            8883,
+            outbound.clone(),
+            inbound.clone(),
+            encoded.clone(),
+            deadline,
+        );
+        let fallback = mqtt_pair_exchange::<T>(
+            "broker.hivemq.com",
+            8883,
+            outbound,
+            inbound,
+            encoded,
+            deadline,
+        );
+        tokio::pin!(primary, fallback);
+        tokio::select! {
+            result = &mut primary => match result {
+                Ok(value) => Ok(value),
+                Err(first) => fallback.await.map_err(|second| format!("绑定超时（{waiting}）：{first}；{second}")),
+            },
+            result = &mut fallback => match result {
+                Ok(value) => Ok(value),
+                Err(first) => primary.await.map_err(|second| format!("绑定超时（{waiting}）：{first}；{second}")),
+            },
         }
-        if let Ok(Some(cached)) = self.read_cached_credentials() {
-            if cached.expires_at_ms > now_ms() + 60_000 {
-                return Ok(cached);
-            }
-        }
-        Err(format!("暂时无法连接联网凭证服务：{}", errors.join("；")))
     }
 
     pub async fn make_signal(
@@ -951,14 +663,12 @@ impl BindingManager {
                 acknowledged_at_ms,
             )),
         };
-        self.revoke_cloud_binding(&record, &approval, &ack).await?;
         self.mutate_state(|state| {
             state.approved_unbind = Some(approval);
             state.outgoing_unbind = None;
             state.revoked = true;
         })
         .await?;
-        self.clear_cached_credentials();
         Ok(ack)
     }
 
@@ -993,7 +703,6 @@ impl BindingManager {
             state.incoming_unbind = None;
         })
         .await?;
-        self.clear_cached_credentials();
         Ok(())
     }
 
@@ -1038,8 +747,6 @@ impl BindingManager {
             signaling_user_id: signaling_user_id_from_parts(binding_id, self.role()),
             device_id,
             machine_fingerprint: machine_fingerprint(binding_id)?,
-            tailscale_stable_id: String::new(),
-            tailscale_host: String::new(),
         })
     }
 
@@ -1080,42 +787,6 @@ impl BindingManager {
             .ok_or_else(|| "请先完成一二与布布的首次绑定".to_string())
     }
 
-    async fn revoke_cloud_binding(
-        &self,
-        record: &BindingRecord,
-        approval: &UnbindApproval,
-        ack: &UnbindAck,
-    ) -> Result<(), String> {
-        let client = short_http_client()?;
-        let mut errors = Vec::new();
-        for endpoint in resolved_endpoints(&client).await {
-            let url = match endpoint_request_url(&endpoint, "/api/revoke") {
-                Ok(value) => value,
-                Err(error) => {
-                    errors.push(error);
-                    continue;
-                }
-            };
-            match post_protected_json(
-                &client,
-                url,
-                &json!({ "record": record, "approval": approval, "ack": ack }),
-            )
-            .await
-            {
-                Ok(response) if response.status().is_success() => return Ok(()),
-                Ok(response) => errors.push(
-                    response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "联网解绑服务返回错误".into()),
-                ),
-                Err(error) => errors.push(error.to_string()),
-            }
-        }
-        Err(format!("暂时无法完成联网双向解绑：{}", errors.join("；")))
-    }
-
     fn verify_complete_record(&self, record: &BindingRecord) -> Result<(), String> {
         if record.core.mac.role != "yier" || record.core.windows.role != "bubu" {
             return Err("绑定记录中的设备角色无效".into());
@@ -1142,7 +813,6 @@ impl BindingManager {
             };
         })
         .await?;
-        self.clear_cached_credentials();
         let _ = self.app.emit("binding-changed", ());
         Ok(())
     }
@@ -1165,209 +835,61 @@ impl BindingManager {
     fn sign_bytes(&self, bytes: &[u8]) -> String {
         BASE64.encode(self.signing_key.sign(bytes).to_bytes())
     }
-
-    #[cfg(target_os = "macos")]
-    fn read_cached_credentials(&self) -> Result<Option<RealtimeCredentials>, String> {
-        // Ad-hoc signed private Mac builds receive a different code requirement
-        // after every update. Keychain can then wait indefinitely for access to
-        // this replaceable cache. The permanent device signing key remains in
-        // Keychain; short-lived realtime credentials are fetched when needed.
-        Ok(None)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn read_cached_credentials(&self) -> Result<Option<RealtimeCredentials>, String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, CREDENTIAL_KEYRING_USER)
-            .map_err(|error| error.to_string())?;
-        match entry.get_password() {
-            Ok(value) => match serde_json::from_str(&value) {
-                Ok(value) => return Ok(Some(value)),
-                Err(_) => {
-                    let _ = entry.delete_credential();
-                    return Ok(None);
-                }
-            },
-            Err(keyring::Error::NoEntry) => {}
-            Err(error) => return Err(format!("无法读取系统安全存储中的联网凭证：{error}")),
-        }
-        if !self.credential_path.exists() {
-            return Ok(None);
-        }
-        let value: RealtimeCredentials = match serde_json::from_slice(
-            &fs::read(&self.credential_path).map_err(|error| error.to_string())?,
-        ) {
-            Ok(value) => value,
-            Err(_) => {
-                let _ = fs::remove_file(&self.credential_path);
-                return Ok(None);
-            }
-        };
-        self.write_cached_credentials(&value)?;
-        Ok(Some(value))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn write_cached_credentials(&self, _value: &RealtimeCredentials) -> Result<(), String> {
-        Ok(())
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn write_cached_credentials(&self, value: &RealtimeCredentials) -> Result<(), String> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, CREDENTIAL_KEYRING_USER)
-            .map_err(|error| error.to_string())?;
-        entry
-            .set_password(&serde_json::to_string(value).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("无法安全保存联网凭证：{error}"))?;
-        let _ = fs::remove_file(&self.credential_path);
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn clear_cached_credentials(&self) {
-        let _ = fs::remove_file(&self.credential_path);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn clear_cached_credentials(&self) {
-        if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, CREDENTIAL_KEYRING_USER) {
-            let _ = entry.delete_credential();
-        }
-        let _ = fs::remove_file(&self.credential_path);
-    }
 }
 
 fn binding_core_bytes(core: &BindingCore) -> Result<Vec<u8>, String> {
-    if core.version != 1 {
-        return serde_json::to_vec(core).map_err(|error| error.to_string());
-    }
-    serde_json::to_vec(&LegacyBindingCore {
-        version: core.version,
-        binding_id: &core.binding_id,
-        created_at_ms: core.created_at_ms,
-        mac: legacy_device_enrollment(&core.mac),
-        windows: legacy_device_enrollment(&core.windows),
-    })
-    .map_err(|error| error.to_string())
+    serde_json::to_vec(core).map_err(|error| error.to_string())
 }
 
-fn legacy_device_enrollment(value: &DeviceEnrollment) -> LegacyDeviceEnrollment<'_> {
-    LegacyDeviceEnrollment {
-        role: &value.role,
-        pet_name: &value.pet_name,
-        public_key: &value.public_key,
-        tailscale_stable_id: &value.tailscale_stable_id,
-        tailscale_host: &value.tailscale_host,
-        machine_fingerprint: &value.machine_fingerprint,
-    }
-}
-
-fn configured_endpoints() -> Vec<String> {
-    ENDPOINTS
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|value| value.starts_with("https://"))
-        .map(|value| value.trim_end_matches('/').to_string())
-        .collect()
-}
-
-fn realtime_service_available() -> bool {
-    RUNTIME_CONFIG_URL.is_some_and(|value| value.starts_with("https://"))
-        || !configured_endpoints().is_empty()
-}
-
-async fn resolved_endpoints(client: &reqwest::Client) -> Vec<String> {
-    let mut endpoints = Vec::new();
-    if let (Some(config_url), Some(expected_host)) = (RUNTIME_CONFIG_URL, RUNTIME_PROJECT_HOST) {
-        if let Ok(mut url) = reqwest::Url::parse(config_url) {
-            url.query_pairs_mut()
-                .append_pair("refresh", &(now_ms() / 60_000).to_string());
-            if let Ok(response) = client
-                .get(url)
-                .header(reqwest::header::CACHE_CONTROL, "no-cache")
-                .send()
-                .await
-            {
-                if response.status().is_success() {
-                    if let Ok(bytes) = response.bytes().await {
-                        if let Ok(config) = decode_runtime_config(&bytes) {
-                            if config.expires_at_ms > now_ms() + 5 * 60_000 {
-                                if let Some(endpoint) =
-                                    validate_runtime_endpoint(&config.endpoint, expected_host)
-                                {
-                                    // Keep the short-lived EdgeOne access parameters on every
-                                    // request. Relying on the protection page's cookies is not
-                                    // portable across HTTP cookie implementations (notably the
-                                    // two Partitioned cookies used by EdgeOne).
-                                    endpoints.push(endpoint);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    for endpoint in configured_endpoints() {
-        if !endpoints.contains(&endpoint) {
-            endpoints.push(endpoint);
-        }
-    }
-    endpoints
-}
-
-fn runtime_api_base(endpoint: &str) -> Option<String> {
-    let mut url = reqwest::Url::parse(endpoint).ok()?;
-    url.set_query(None);
-    Some(url.as_str().trim_end_matches('/').to_string())
-}
-
-fn decode_runtime_config(bytes: &[u8]) -> Result<RuntimeEndpointConfig, String> {
-    if let Ok(config) = serde_json::from_slice::<RuntimeEndpointConfig>(bytes) {
-        return Ok(config);
-    }
-    let wrapper: GitHubContentResponse =
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    if wrapper.encoding != "base64" {
-        return Err("联网入口配置编码无效".into());
-    }
-    let decoded = BASE64
-        .decode(wrapper.content.replace(['\r', '\n'], ""))
+async fn mqtt_pair_exchange<T>(
+    host: &str,
+    port: u16,
+    outbound_topic: String,
+    inbound_topic: String,
+    payload: Vec<u8>,
+    deadline_ms: u64,
+) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client_id = format!("yb_pair_{}", Uuid::new_v4().simple());
+    let mut options = MqttOptions::new(client_id, host, port);
+    options.set_keep_alive(Duration::from_secs(20));
+    options.set_clean_session(true);
+    options.set_transport(Transport::tls_with_default_config());
+    let (client, mut event_loop) = AsyncClient::new(options, 20);
+    client
+        .subscribe(inbound_topic.clone(), QoS::AtLeastOnce)
+        .await
         .map_err(|error| error.to_string())?;
-    serde_json::from_slice(&decoded).map_err(|error| error.to_string())
-}
+    client
+        .publish(outbound_topic, QoS::AtLeastOnce, true, payload)
+        .await
+        .map_err(|error| error.to_string())?;
 
-fn validate_runtime_endpoint(value: &str, expected_host: &str) -> Option<String> {
-    let url = reqwest::Url::parse(value).ok()?;
-    if url.scheme() != "https"
-        || url.host_str() != Some(expected_host)
-        || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || (url.path() != "/" && !url.path().is_empty())
-        || url.fragment().is_some()
-    {
-        return None;
-    }
-    let mut seen_token = false;
-    let mut seen_time = false;
-    for (key, value) in url.query_pairs() {
-        if value.is_empty() {
-            return None;
+    loop {
+        let remaining = Duration::from_millis(deadline_ms.saturating_sub(now_ms()));
+        if remaining.is_zero() {
+            return Err(format!("{host} 等待对方超时"));
         }
-        match key.as_ref() {
-            "eo_token" if !seen_token => seen_token = true,
-            "eo_time" if !seen_time => seen_time = true,
-            _ => return None,
+        let event = tokio::time::timeout(remaining, event_loop.poll())
+            .await
+            .map_err(|_| format!("{host} 等待对方超时"))?
+            .map_err(|error| format!("{host}：{error}"))?;
+        if let Event::Incoming(Incoming::Publish(message)) = event {
+            if message.topic != inbound_topic {
+                continue;
+            }
+            let envelope: PairExchangeEnvelope<T> = serde_json::from_slice(&message.payload)
+                .map_err(|error| format!("绑定交换消息无效：{error}"))?;
+            if now_ms().saturating_sub(envelope.timestamp_ms) > 5 * 60_000 {
+                continue;
+            }
+            let _ = client.disconnect().await;
+            return Ok(envelope.payload);
         }
     }
-    (seen_token && seen_time).then(|| value.trim_end_matches('/').to_string())
-}
-
-fn endpoint_request_url(endpoint: &str, path: &str) -> Result<reqwest::Url, String> {
-    let mut url = reqwest::Url::parse(endpoint).map_err(|error| error.to_string())?;
-    url.set_path(path);
-    Ok(url)
 }
 
 fn pair_channel(passphrase: &str) -> String {
@@ -1538,96 +1060,6 @@ fn platform_machine_material() -> Result<String, String> {
     Ok("unsupported-development-platform".into())
 }
 
-fn short_http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        // EdgeOne answers token-bearing POST requests with 302. Following that response would
-        // rewrite POST to GET, so protected requests handle the one redirect explicitly.
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(12))
-        .user_agent("yier-bubu-desktop-pet/0.4")
-        .build()
-        .map_err(|error| error.to_string())
-}
-
-async fn post_protected_json<T: Serialize + ?Sized>(
-    client: &reqwest::Client,
-    url: reqwest::Url,
-    body: &T,
-) -> Result<reqwest::Response, reqwest::Error> {
-    let response = client.post(url.clone()).json(body).send().await?;
-    if !response.status().is_redirection() || url.query().is_none() {
-        return Ok(response);
-    }
-    let Some(cookie) = edgeone_cookie_header(response.headers()) else {
-        return Ok(response);
-    };
-    let mut clean_url = url;
-    clean_url.set_query(None);
-    client
-        .post(clean_url)
-        .header(reqwest::header::COOKIE, cookie)
-        .json(body)
-        .send()
-        .await
-}
-
-fn edgeone_cookie_header(headers: &reqwest::header::HeaderMap) -> Option<String> {
-    let mut token = None;
-    let mut time = None;
-    for header in headers.get_all(reqwest::header::SET_COOKIE) {
-        let pair = header.to_str().ok()?.split(';').next()?.trim();
-        let (name, value) = pair.split_once('=')?;
-        if value.is_empty() {
-            return None;
-        }
-        match name {
-            "eo_token" if token.is_none() => token = Some(pair.to_string()),
-            "eo_time" if time.is_none() => time = Some(pair.to_string()),
-            _ => {}
-        }
-    }
-    Some(format!("{}; {}", token?, time?))
-}
-
-pub(crate) struct ProtectedServiceAccess {
-    pub endpoint: String,
-    pub cookie: Option<String>,
-}
-
-/// Resolve the short-lived EdgeOne entry point and exchange its query token for
-/// a normal Cookie header. This is shared by the realtime API and the updater:
-/// project domains require that handshake for clients connecting from mainland
-/// China, while direct/custom-domain deployments work without a cookie.
-pub(crate) async fn protected_service_access(path: &str) -> Option<ProtectedServiceAccess> {
-    let client = short_http_client().ok()?;
-    for endpoint in resolved_endpoints(&client).await {
-        let url = endpoint_request_url(&endpoint, path).ok()?;
-        let response = match client.get(url.clone()).send().await {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if response.status().is_success() {
-            return Some(ProtectedServiceAccess {
-                endpoint: url.to_string(),
-                cookie: None,
-            });
-        }
-        if response.status().is_redirection() && url.query().is_some() {
-            let Some(cookie) = edgeone_cookie_header(response.headers()) else {
-                continue;
-            };
-            let mut clean_url = url;
-            clean_url.set_query(None);
-            return Some(ProtectedServiceAccess {
-                endpoint: clean_url.to_string(),
-                cookie: Some(cookie),
-            });
-        }
-    }
-    None
-}
-
 fn payload_mac<T: Serialize>(key: &[u8], label: &[u8], value: &T) -> Result<String, String> {
     let mut mac = HmacSha256::new_from_slice(key).map_err(|error| error.to_string())?;
     mac.update(label);
@@ -1677,26 +1109,6 @@ fn verify_bytes(public_key: &str, bytes: &[u8], signature: &str) -> Result<(), S
     let key = VerifyingKey::from_bytes(&key_bytes).map_err(|error| error.to_string())?;
     key.verify(bytes, &Signature::from_bytes(&signature_bytes))
         .map_err(|_| "设备数字签名校验失败".to_string())
-}
-
-fn credential_request_bytes(core: &CredentialRequestCore) -> Vec<u8> {
-    format!(
-        "credential-v1|{}|{}|{}|{}|{}",
-        core.binding_id, core.role, core.public_key, core.nonce, core.timestamp_ms
-    )
-    .into_bytes()
-}
-
-fn pair_channel_authorization_bytes(channel: &str) -> Vec<u8> {
-    format!("pair-channel-v1|{channel}").into_bytes()
-}
-
-fn binding_recovery_proof_bytes(proof: &BindingRecoveryProof) -> Vec<u8> {
-    format!(
-        "binding-recovery-v1|{}|{}|{}|{}",
-        proof.role, proof.public_key, proof.nonce, proof.timestamp_ms
-    )
-    .into_bytes()
 }
 
 fn unbind_request_bytes(core: &UnbindCore) -> Vec<u8> {
@@ -1834,120 +1246,10 @@ mod tests {
     }
 
     #[test]
-    fn credential_request_has_fixed_domain_separator() {
-        let core = CredentialRequestCore {
-            binding_id: "binding".into(),
-            role: "yier".into(),
-            public_key: "key".into(),
-            nonce: "nonce".into(),
-            timestamp_ms: 123,
-        };
-        assert_eq!(
-            credential_request_bytes(&core),
-            b"credential-v1|binding|yier|key|nonce|123"
-        );
-    }
-
-    #[test]
-    fn pair_channel_authorization_has_fixed_domain_separator() {
-        assert_eq!(
-            pair_channel_authorization_bytes("abc"),
-            b"pair-channel-v1|abc"
-        );
-    }
-
-    #[test]
     fn pairing_code_normalization_ignores_grouping_and_case() {
         assert_eq!(
             normalize_pairing_code("abcd-2345 efgh-6789"),
             "ABCD2345EFGH6789"
-        );
-    }
-
-    #[test]
-    fn binding_recovery_proof_has_fixed_domain_separator() {
-        let proof = BindingRecoveryProof {
-            role: "bubu".into(),
-            public_key: "public-key".into(),
-            nonce: "nonce".into(),
-            timestamp_ms: 123,
-        };
-        assert_eq!(
-            binding_recovery_proof_bytes(&proof),
-            b"binding-recovery-v1|bubu|public-key|nonce|123"
-        );
-    }
-
-    #[test]
-    fn runtime_endpoint_is_pinned_to_the_deployed_project() {
-        let endpoint = validate_runtime_endpoint(
-            "https://private.example.edgeone.dev?eo_token=abc&eo_time=123",
-            "private.example.edgeone.dev",
-        )
-        .unwrap();
-        assert_eq!(
-            endpoint_request_url(&endpoint, "/api/pair")
-                .unwrap()
-                .as_str(),
-            "https://private.example.edgeone.dev/api/pair?eo_token=abc&eo_time=123"
-        );
-        assert!(validate_runtime_endpoint(
-            "https://attacker.example/api?eo_token=abc&eo_time=123",
-            "private.example.edgeone.dev"
-        )
-        .is_none());
-        assert!(validate_runtime_endpoint(
-            "https://private.example.edgeone.dev?eo_token=abc&eo_time=123&next=evil",
-            "private.example.edgeone.dev"
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn runtime_api_base_removes_one_time_access_parameters() {
-        assert_eq!(
-            runtime_api_base("https://private.example.edgeone.dev?eo_token=secret&eo_time=123")
-                .as_deref(),
-            Some("https://private.example.edgeone.dev")
-        );
-    }
-
-    #[test]
-    fn edgeone_partitioned_cookies_are_forwarded_without_attributes() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            "eo_token=secret; HttpOnly; Path=/; Secure; Partitioned"
-                .parse()
-                .unwrap(),
-        );
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            "eo_time=123; HttpOnly; Path=/; Secure; Partitioned"
-                .parse()
-                .unwrap(),
-        );
-        assert_eq!(
-            edgeone_cookie_header(&headers).as_deref(),
-            Some("eo_token=secret; eo_time=123")
-        );
-    }
-
-    #[test]
-    fn runtime_config_accepts_direct_and_github_content_responses() {
-        let raw = br#"{"endpoint":"https://private.example.edgeone.dev?eo_token=abc&eo_time=123","expiresAtMs":9999999999999}"#;
-        assert_eq!(
-            decode_runtime_config(raw).unwrap().expires_at_ms,
-            9_999_999_999_999
-        );
-        let wrapped = serde_json::to_vec(&json!({
-            "encoding": "base64",
-            "content": BASE64.encode(raw),
-        }))
-        .unwrap();
-        assert_eq!(
-            decode_runtime_config(&wrapped).unwrap().endpoint,
-            "https://private.example.edgeone.dev?eo_token=abc&eo_time=123"
         );
     }
 
@@ -1958,29 +1260,40 @@ mod tests {
         assert_eq!(decoded.verifying_key(), original.verifying_key());
     }
 
-    #[test]
-    fn legacy_binding_core_keeps_the_original_signed_field_order() {
-        let enrollment = |role: &str, pet_name: &str| DeviceEnrollment {
-            role: role.into(),
-            pet_name: pet_name.into(),
-            public_key: format!("{role}-key"),
-            device_id: String::new(),
-            signaling_user_id: String::new(),
-            machine_fingerprint: format!("{role}-machine"),
-            tailscale_stable_id: format!("{role}-node"),
-            tailscale_host: format!("{role}.tail"),
-        };
-        let core = BindingCore {
-            version: 1,
-            binding_id: "legacy-binding".into(),
-            created_at_ms: 123,
-            mac: enrollment("yier", "一二"),
-            windows: enrollment("bubu", "布布"),
-        };
-        let text = String::from_utf8(binding_core_bytes(&core).unwrap()).unwrap();
-        assert_eq!(
-            text,
-            r#"{"version":1,"bindingId":"legacy-binding","createdAtMs":123,"mac":{"role":"yier","petName":"一二","publicKey":"yier-key","tailscaleStableId":"yier-node","tailscaleHost":"yier.tail","machineFingerprint":"yier-machine"},"windows":{"role":"bubu","petName":"布布","publicKey":"bubu-key","tailscaleStableId":"bubu-node","tailscaleHost":"bubu.tail","machineFingerprint":"bubu-machine"}}"#
-        );
+    #[tokio::test]
+    #[ignore = "requires the two public MQTT endpoints"]
+    async fn public_pairing_brokers_exchange_messages() {
+        for (host, port) in [("broker.emqx.io", 8883), ("broker.hivemq.com", 8883)] {
+            let route = Uuid::new_v4().simple().to_string();
+            let mac_topic = format!("yier-bubu/diagnostic/{route}/mac");
+            let windows_topic = format!("yier-bubu/diagnostic/{route}/windows");
+            let deadline = now_ms() + 30_000;
+            let encode = |payload: &str| {
+                serde_json::to_vec(&PairExchangeEnvelope {
+                    payload: payload.to_string(),
+                    timestamp_ms: now_ms(),
+                })
+                .unwrap()
+            };
+            let mac = mqtt_pair_exchange::<String>(
+                host,
+                port,
+                mac_topic.clone(),
+                windows_topic.clone(),
+                encode("mac"),
+                deadline,
+            );
+            let windows = mqtt_pair_exchange::<String>(
+                host,
+                port,
+                windows_topic,
+                mac_topic,
+                encode("windows"),
+                deadline,
+            );
+            let (mac_result, windows_result) = tokio::join!(mac, windows);
+            assert_eq!(mac_result.unwrap(), "windows");
+            assert_eq!(windows_result.unwrap(), "mac");
+        }
     }
 }

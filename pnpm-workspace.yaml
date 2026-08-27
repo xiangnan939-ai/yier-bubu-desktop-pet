@@ -1,6 +1,5 @@
 packages:
   - "."
-  - "services/*"
 
 allowBuilds:
   esbuild: true

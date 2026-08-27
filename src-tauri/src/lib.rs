@@ -25,8 +25,7 @@ mod cloud_binding;
 mod updates;
 
 use cloud_binding::{
-    BindingManager, BindingStatus, PairingResult, RealtimeCredentials, SignalProcessResult,
-    SignedSignal,
+    BindingManager, BindingStatus, PairingResult, SignalProcessResult, SignedSignal,
 };
 
 const MAX_STREAM_WIDTH: u32 = 1_280;
@@ -94,21 +93,6 @@ async fn pair_device(
     manager: tauri::State<'_, BindingManager>,
 ) -> Result<PairingResult, String> {
     manager.pair(passphrase).await
-}
-
-#[tauri::command]
-async fn sync_binding_recovery(
-    manager: tauri::State<'_, BindingManager>,
-) -> Result<PairingResult, String> {
-    manager.sync_binding_recovery().await
-}
-
-#[tauri::command]
-async fn realtime_credentials(
-    force_refresh: bool,
-    manager: tauri::State<'_, BindingManager>,
-) -> Result<RealtimeCredentials, String> {
-    manager.credentials(force_refresh).await
 }
 
 #[tauri::command]
@@ -510,10 +494,8 @@ fn direct_webview_network_arguments(current: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn configure_webview_network() {
-    // The realtime renderer only talks to Tencent Chat/TRTC. A stale Windows
-    // loopback proxy would otherwise keep the pet bound but permanently
-    // offline (WebView2 reports ERR_PROXY_CONNECTION_FAILED). Rust-side API
-    // and updater traffic are unaffected by this WebView-only argument.
+    // WebView2 must reach the two embedded MQTT signaling routes directly.
+    // A stale loopback proxy would otherwise leave the pet bound but offline.
     const KEY: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
     let current = std::env::var(KEY).unwrap_or_default();
     std::env::set_var(KEY, direct_webview_network_arguments(&current));
@@ -558,8 +540,6 @@ pub fn run() {
             app_profile,
             binding_status,
             pair_device,
-            sync_binding_recovery,
-            realtime_credentials,
             make_realtime_signal,
             process_realtime_signal,
             request_unbind,
@@ -575,9 +555,7 @@ pub fn run() {
             device_status,
             updates::update_configuration,
             updates::check_app_update,
-            updates::install_app_update,
-            updates::installed_asset_pack,
-            updates::check_and_install_asset_update
+            updates::install_app_update
         ]);
 
     if let (Some(endpoint), Some(public_key)) = (

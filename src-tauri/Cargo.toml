@@ -1,6 +1,6 @@
 [package]
 name = "yier-bubu-desktop-pet"
-version = "0.5.22"
+version = "0.5.23"
 description = "一二与布布的双人私人桌宠"
 authors = ["一二与布布"]
 edition = "2021"
@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
+tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
@@ -31,14 +31,11 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 hmac = "0.12"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { version = "0.13", default-features = false, features = ["cookies", "json", "rustls"] }
-semver = "1"
+rumqttc = "0.25.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.10"
 spake2 = "0.4"
 uuid = { version = "1", features = ["v4"] }
-zip = { version = "4", default-features = false, features = ["deflate"] }
-futures-util = "0.3"
-minisign-verify = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 tokio = { version = "1", features = ["sync", "time"] }
 xcap = "0.9.8"

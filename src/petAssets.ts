@@ -6,8 +6,6 @@ export type PetAsset = {
   sourcePath: string;
 };
 
-export type HotPetAsset = PetAsset & { action: string };
-
 const gifModules = import.meta.glob<string>(
   "../assets/characters/**/*.gif",
   { eager: true, query: "?url", import: "default" },
@@ -21,19 +19,13 @@ function actionFromPath(path: string) {
   return raw === "idel" ? "idle" : raw;
 }
 
-export function buildPetLibrary(role: PetRole, hotAssets: HotPetAsset[] = []) {
+export function buildPetLibrary(role: PetRole) {
   const actions = new Map<string, PetAsset[]>();
   for (const [path, url] of Object.entries(gifModules)) {
     if (!path.includes(roleFolder[role])) continue;
     const action = actionFromPath(path);
     actions.set(action, [...(actions.get(action) ?? []), { url, sourcePath: path }]);
   }
-  const hotActions = new Map<string, PetAsset[]>();
-  for (const { action, url, sourcePath } of hotAssets) {
-    hotActions.set(action, [...(hotActions.get(action) ?? []), { url, sourcePath }]);
-  }
-  // 热更新包只覆盖它实际提供的动作；缺少的动作继续使用安装包内素材。
-  for (const [action, assets] of hotActions) actions.set(action, assets);
   return actions;
 }
 

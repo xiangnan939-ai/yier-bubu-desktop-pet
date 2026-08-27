@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
@@ -13,11 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PetAnimationStateMachine } from "./animation/stateMachine";
 import type { AnimationSnapshot } from "./animation/types";
 import { DEFAULT_WALK_CHANCE } from "./animation/weights";
-import {
-  buildPetLibrary,
-  type HotPetAsset,
-  type PetRole,
-} from "./petAssets";
+import { buildPetLibrary, type PetRole } from "./petAssets";
 import {
   RealtimeMessaging,
   ScreenPublisher,
@@ -60,7 +56,6 @@ type PairingResult = { state: string; message: string };
 type UpdateConfiguration = {
   currentVersion: string;
   appUpdateEnabled: boolean;
-  assetUpdateEnabled: boolean;
 };
 type AppUpdateCheck = {
   available: boolean;
@@ -74,51 +69,10 @@ type UpdateProgress = {
   downloadedBytes: number;
   totalBytes: number | null;
 };
-type InstalledAssetPack = {
-  version: string | null;
-  assets: Array<{ action: string; path: string; sourcePath: string }>;
-  rules: unknown;
-};
-
-type ActionRules = {
-  walkChance: number;
-};
-
-const DEFAULT_ACTION_RULES: ActionRules = {
-  walkChance: DEFAULT_WALK_CHANCE,
-};
-
 function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function safeNumber(value: unknown, fallback: number, min: number, max: number) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.min(max, Math.max(min, value))
-    : fallback;
-}
-
-function normalizeActionRules(value: unknown): ActionRules {
-  const rules = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const weights = rules.ambientWeights && typeof rules.ambientWeights === "object"
-    ? rules.ambientWeights as Record<string, unknown> : {};
-  const legacyWalk = safeNumber(weights.walk, 24, 0, 100);
-  const legacyTotal = legacyWalk
-    + safeNumber(weights.look, 25, 0, 100)
-    + safeNumber(weights.sit, 18, 0, 100)
-    + safeNumber(weights.idle, 33, 0, 100);
-  const legacyChance = legacyWalk / Math.max(1, legacyTotal);
-  return { walkChance: safeNumber(rules.walkChance, legacyChance, 0, 1) };
-}
-
-function hotAssetsFromPack(pack: InstalledAssetPack): HotPetAsset[] {
-  return pack.assets.map((asset) => ({
-    action: asset.action,
-    sourcePath: asset.sourcePath,
-    url: `${convertFileSrc(asset.path)}?pack=${encodeURIComponent(pack.version ?? "current")}`,
-  }));
 }
 
 const DEFAULT_PET_SIZE = 160;
@@ -316,32 +270,6 @@ function BindingSetup() {
   };
 
   const alreadyBound = status?.state === "bound" || status?.state === "revoking";
-  useEffect(() => {
-    if (profile.role !== "bubu" || alreadyBound || busy) return;
-    let cancelled = false;
-    let timer = 0;
-    const recover = async () => {
-      try {
-        const result = await invoke<PairingResult>("sync_binding_recovery");
-        if (cancelled) return;
-        if (result.state === "recovered" || result.state === "bound") {
-          setMessage(result.message);
-          await refresh();
-          await emitTo("main", "binding-changed").catch(() => undefined);
-          window.setTimeout(() => getCurrentWindow().destroy(), 700);
-          return;
-        }
-      } catch {
-        // Mac 可能尚未上传完整记录；保留手动配对并在后台继续重试。
-      }
-      if (!cancelled) timer = window.setTimeout(recover, 4000);
-    };
-    recover();
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [alreadyBound, busy, profile.role, refresh]);
 
   return (
     <main className="binding-shell">
@@ -608,15 +536,7 @@ function PetMenu() {
 
 function Pet() {
   const [profile, setProfile] = useState(fallbackProfile);
-  const [hotPack, setHotPack] = useState<{ version: string | null; assets: HotPetAsset[] }>({
-    version: null,
-    assets: [],
-  });
-  const [actionRules, setActionRules] = useState(DEFAULT_ACTION_RULES);
-  const library = useMemo(
-    () => buildPetLibrary(profile.role, hotPack.assets),
-    [hotPack.assets, profile.role],
-  );
+  const library = useMemo(() => buildPetLibrary(profile.role), [profile.role]);
   const [animation, setAnimation] = useState<AnimationSnapshot>({
     action: "idle",
     assetUrl: "",
@@ -630,12 +550,6 @@ function Pet() {
   const animationRef = useRef<PetAnimationStateMachine | null>(null);
   const realtimeRef = useRef<RealtimeMessaging | null>(null);
   const publisherRef = useRef<ScreenPublisher | null>(null);
-
-  const loadInstalledPack = useCallback(async () => {
-    const pack = await invoke<InstalledAssetPack>("installed_asset_pack", { role: profile.role });
-    setHotPack({ version: pack.version, assets: hotAssetsFromPack(pack) });
-    setActionRules(normalizeActionRules(pack.rules));
-  }, [profile.role]);
 
   useEffect(() => {
     invoke<AppProfile>("app_profile").then(setProfile).catch(() => undefined);
@@ -660,7 +574,7 @@ function Pet() {
     const engine = new PetAnimationStateMachine({
       role: profile.role,
       library,
-      walkChance: actionRules.walkChance,
+      walkChance: DEFAULT_WALK_CHANCE,
       onState: setAnimation,
       getWindowMetrics: async () => {
         const [monitor, position, size] = await Promise.all([
@@ -696,23 +610,8 @@ function Pet() {
   }, [library]);
 
   useEffect(() => {
-    animationRef.current?.updateWalkChance(actionRules.walkChance);
-  }, [actionRules.walkChance]);
-
-  useEffect(() => {
     animationRef.current?.updateExternalState({ screenSharing: isSharing });
   }, [isSharing]);
-
-  useEffect(() => {
-    loadInstalledPack().catch(() => undefined);
-  }, [loadInstalledPack]);
-
-  useEffect(() => {
-    const unlisten = listen("asset-pack-updated", () => {
-      loadInstalledPack().catch(() => undefined);
-    });
-    return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
-  }, [loadInstalledPack]);
 
   useEffect(() => {
     let stopped = false;
@@ -772,7 +671,6 @@ function Pet() {
     try {
       const messaging = realtimeRef.current;
       if (!messaging) throw new Error("内置联网通道尚未启动");
-      await messaging.connect();
       const session = await createViewSession();
       attemptedSessionId = session.sessionId;
       localStorage.setItem(VIEW_SESSION_KEY, JSON.stringify(session));
@@ -971,6 +869,11 @@ function Pet() {
       openPetMenu();
     }}>
       <button className="pet-hitbox" aria-label={`${profile.petName}，当前动作 ${animation.action}`}
+        onKeyDown={(event) => {
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          event.preventDefault();
+          openPetMenu();
+        }}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           const button = event.currentTarget as HTMLButtonElement;
@@ -1043,13 +946,7 @@ function PetGate() {
   const refresh = useCallback(async () => {
     const main = getCurrentWindow();
     try {
-      let status = await invoke<BindingStatus>("binding_status");
-      if (status.state === "bound" || status.state === "revoking") {
-        await invoke<PairingResult>("sync_binding_recovery").catch(() => undefined);
-      } else if (fallbackProfile.role === "bubu") {
-        await invoke<PairingResult>("sync_binding_recovery").catch(() => undefined);
-        status = await invoke<BindingStatus>("binding_status");
-      }
+      const status = await invoke<BindingStatus>("binding_status");
       const allowed = status.state === "bound" || status.state === "revoking";
       setUsable(allowed);
       if (allowed) {

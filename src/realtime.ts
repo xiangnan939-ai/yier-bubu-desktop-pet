@@ -1,21 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChatSDK, Message } from "@tencentcloud/chat";
+import type { MqttClient } from "mqtt";
 
-type ChatNamespace = typeof import("@tencentcloud/chat")["default"];
-let chatModule: Promise<ChatNamespace> | null = null;
-function loadChat() {
-  chatModule ??= import("@tencentcloud/chat").then((module) => module.default);
-  return chatModule;
+let mqttModule: Promise<typeof import("mqtt")> | null = null;
+function loadMqtt() {
+  mqttModule ??= import("mqtt");
+  return mqttModule;
 }
-
-export type RealtimeCredentials = {
-  sdkAppId: number;
-  userId: string;
-  partnerUserId: string;
-  userSig: string;
-  expiresAtMs: number;
-  endpoint: string;
-};
 
 export type SignalCore = {
   version: number;
@@ -61,13 +51,46 @@ function reasonText(reason: unknown) {
   return String(reason);
 }
 
+const SIGNAL_BROKERS = [
+  "wss://broker.emqx.io:8084/mqtt",
+  "wss://broker.hivemq.com:8884/mqtt",
+] as const;
+
+type RealtimeRoute = {
+  bindingId: string | null;
+  state: string;
+};
+
+type RealtimeProfile = {
+  role: "yier" | "bubu";
+};
+
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function firstSuccessful(operations: Promise<void>[]) {
+  return new Promise<void>((resolve, reject) => {
+    let failures = 0;
+    for (const operation of operations) {
+      operation.then(resolve).catch(() => {
+        failures += 1;
+        if (failures === operations.length) reject(new Error("全部节点均连接失败"));
+      });
+    }
+  });
+}
+
 export class RealtimeMessaging {
-  private chat: ChatSDK | null = null;
-  private chatNamespace: ChatNamespace | null = null;
-  private credentials: RealtimeCredentials | null = null;
+  private clients = new Map<string, MqttClient>();
   private connectPromise: Promise<void> | null = null;
-  private historyPollTimer: number | null = null;
   private seenSignalNonces = new Set<string>();
+  private inboundTopic = "";
+  private outboundTopic = "";
+  private clientId = "";
   private ready = false;
   private handler: SignalHandler;
 
@@ -75,92 +98,107 @@ export class RealtimeMessaging {
     this.handler = handler;
   }
 
-  connect(forceRefresh = false) {
-    const expiring = Boolean(this.credentials && this.credentials.expiresAtMs < Date.now() + 48 * 60 * 60_000);
-    if (this.ready && !forceRefresh && !expiring) return Promise.resolve();
+  connect(forceRefresh = false): Promise<void> {
+    if (forceRefresh && this.clients.size > 0) {
+      return this.close().then(() => this.connect());
+    }
+    if (this.ready && [...this.clients.values()].some((client) => client.connected)) {
+      return Promise.resolve();
+    }
     if (this.connectPromise) return this.connectPromise;
-    this.connectPromise = this.connectInternal(forceRefresh || expiring).finally(() => {
+    this.connectPromise = this.connectInternal().finally(() => {
       this.connectPromise = null;
     });
     return this.connectPromise;
   }
 
-  private async connectInternal(forceRefresh: boolean) {
-    const TencentCloudChat = await loadChat();
-    this.chatNamespace = TencentCloudChat;
-    const credentials = await invoke<RealtimeCredentials>("realtime_credentials", { forceRefresh });
-    if (this.chat && (this.credentials?.userId !== credentials.userId || forceRefresh)) {
-      this.chat.off(TencentCloudChat.EVENT.MESSAGE_RECEIVED, this.receiveMessages, this);
-      this.chat.off(TencentCloudChat.EVENT.CONVERSATION_LIST_UPDATED, this.conversationUpdated, this);
-      this.chat.off(TencentCloudChat.EVENT.SDK_READY, this.markReady, this);
-      this.chat.off(TencentCloudChat.EVENT.SDK_NOT_READY, this.markNotReady, this);
-      this.chat.off(TencentCloudChat.EVENT.KICKED_OUT, this.reconnect, this);
-      await this.chat.logout().catch(() => undefined);
-      this.chat = null;
-      this.ready = false;
-    }
-    this.credentials = credentials;
-    if (!this.chat) {
-      this.chat = TencentCloudChat.create({ SDKAppID: credentials.sdkAppId });
-      this.chat.on(TencentCloudChat.EVENT.MESSAGE_RECEIVED, this.receiveMessages, this);
-      this.chat.on(TencentCloudChat.EVENT.CONVERSATION_LIST_UPDATED, this.conversationUpdated, this);
-      this.chat.on(TencentCloudChat.EVENT.SDK_READY, this.markReady, this);
-      this.chat.on(TencentCloudChat.EVENT.SDK_NOT_READY, this.markNotReady, this);
-      this.chat.on(TencentCloudChat.EVENT.KICKED_OUT, this.reconnect, this);
-    }
-    const readyPromise = this.ready ? Promise.resolve() : new Promise<void>((resolve, reject) => {
-      const onReady = () => {
-        window.clearTimeout(timeout);
-        this.chat?.off(TencentCloudChat.EVENT.SDK_READY, onReady);
-        resolve();
-      };
-      const timeout = window.setTimeout(() => {
-        this.chat?.off(TencentCloudChat.EVENT.SDK_READY, onReady);
-        reject(new Error("联网消息通道启动超时"));
-      }, 15_000);
-      this.chat?.on(TencentCloudChat.EVENT.SDK_READY, onReady);
-    });
-    await this.chat.login({ userID: credentials.userId, userSig: credentials.userSig });
-    await readyPromise;
-    this.ready = true;
-    this.startHistoryPolling();
-  }
-
-  private markReady() {
-    this.ready = true;
-  }
-
-  private markNotReady() {
-    this.ready = false;
-  }
-
-  private reconnect() {
-    this.ready = false;
-    window.setTimeout(() => this.connect(true).catch(() => undefined), 1_500);
-  }
-
-  private receiveMessages(event: { data?: Message[] }) {
-    this.processMessages(event.data ?? []).catch(() => undefined);
-  }
-
-  private conversationUpdated() {
-    this.pollRecentMessages().catch(() => undefined);
-  }
-
-  private async processMessages(messages: Message[]) {
-    const expectedSender = this.credentials?.partnerUserId;
-    for (const message of messages) {
-      if (!expectedSender || message.from !== expectedSender
-        || message.type !== this.chatNamespace?.TYPES.MSG_TEXT) continue;
-      let signal: SignedSignal;
-      try {
-        signal = JSON.parse(String(message.payload?.text ?? "")) as SignedSignal;
-      } catch {
-        continue;
+  private async connectInternal() {
+    if (!this.inboundTopic) {
+      const [binding, profile] = await Promise.all([
+        invoke<RealtimeRoute>("binding_status"),
+        invoke<RealtimeProfile>("app_profile"),
+      ]);
+      if ((binding.state !== "bound" && binding.state !== "revoking") || !binding.bindingId) {
+        throw new Error("双机尚未完成安全绑定");
       }
+      const routeHash = await sha256Hex(`yier-bubu-mqtt-v1|${binding.bindingId}`);
+      const partnerRole = profile.role === "yier" ? "bubu" : "yier";
+      const base = `yier-bubu/v1/${routeHash}`;
+      this.inboundTopic = `${base}/${profile.role}/+`;
+      this.outboundTopic = `${base}/${partnerRole}`;
+      this.clientId = `yb_${routeHash.slice(0, 12)}_${profile.role}`;
+    }
+
+    const attempts = SIGNAL_BROKERS.map((url) => this.connectBroker(url));
+    try {
+      await firstSuccessful(attempts);
+      this.ready = true;
+    } catch {
+      await this.close();
+      throw new Error("免费双机信令节点暂时无法连接，请检查网络后重试");
+    }
+  }
+
+  private async connectBroker(url: string) {
+    if (this.clients.get(url)?.connected) return;
+    const mqtt = await loadMqtt();
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const client = mqtt.connect(url, {
+        protocolVersion: 5,
+        clean: false,
+        clientId: this.clientId,
+        connectTimeout: 10_000,
+        reconnectPeriod: 2_500,
+        keepalive: 30,
+      });
+      this.clients.set(url, client);
+      const timeout = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        client.end(true);
+        this.clients.delete(url);
+        reject(new Error("连接超时"));
+      }, 12_000);
+      const fail = (reason: Error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        client.end(true);
+        this.clients.delete(url);
+        reject(reason);
+      };
+      client.on("connect", () => {
+        client.subscribe(this.inboundTopic, { qos: 1 }, (error) => {
+          if (error) {
+            fail(error);
+            return;
+          }
+          if (!settled) {
+            settled = true;
+            window.clearTimeout(timeout);
+            resolve();
+          }
+        });
+      });
+      client.on("message", (_topic, payload) => {
+        let signal: SignedSignal;
+        try {
+          signal = JSON.parse(payload.toString()) as SignedSignal;
+        } catch {
+          return;
+        }
+        this.processMessages([signal]).catch(() => undefined);
+      });
+      client.on("error", fail);
+    });
+  }
+
+  private async processMessages(signals: SignedSignal[]) {
+    for (const signal of signals) {
       if (typeof signal.core?.nonce !== "string" || this.seenSignalNonces.has(signal.core.nonce)) continue;
       this.seenSignalNonces.add(signal.core.nonce);
-      if (this.seenSignalNonces.size > 200) {
+      if (this.seenSignalNonces.size > 300) {
         const oldest = this.seenSignalNonces.values().next().value;
         if (oldest) this.seenSignalNonces.delete(oldest);
       }
@@ -169,57 +207,50 @@ export class RealtimeMessaging {
         if (result.reply) await this.send(result.reply);
         await this.handler(result, signal);
       } catch {
-        // Expired, duplicate, or invalid messages are intentionally ignored.
+        // Rust rejects expired, duplicate, forged, or other-device messages.
       }
     }
   }
 
-  private startHistoryPolling() {
-    if (this.historyPollTimer !== null) return;
-    const poll = () => this.pollRecentMessages().catch(() => undefined);
-    poll();
-    // Tencent Chat occasionally records a WebView message without firing its
-    // MESSAGE_RECEIVED callback. Pulling the latest signed messages provides a
-    // low-latency fallback while Rust still verifies sender, binding and nonce.
-    this.historyPollTimer = window.setInterval(poll, 10_000);
-  }
-
-  private async pollRecentMessages() {
-    if (!this.ready || !this.chat || !this.credentials) return;
-    const response = await this.chat.getMessageList({
-      conversationID: `C2C${this.credentials.partnerUserId}`,
+  private publish(client: MqttClient, topic: string, payload: string, expirySeconds: number) {
+    return new Promise<void>((resolve, reject) => {
+      client.publish(topic, payload, {
+        qos: 1,
+        retain: false,
+        properties: { messageExpiryInterval: expirySeconds },
+      }, (error) => error ? reject(error) : resolve());
     });
-    const messages = Array.isArray(response?.data?.messageList)
-      ? response.data.messageList as Message[] : [];
-    await this.processMessages(messages);
   }
 
   async send(signal: SignedSignal) {
     await this.connect();
-    if (!this.chat || !this.credentials || !this.chatNamespace) throw new Error("联网消息通道尚未就绪");
-    const message = this.chat.createTextMessage({
-      to: this.credentials.partnerUserId,
-      conversationType: this.chatNamespace.TYPES.CONV_C2C,
-      payload: { text: JSON.stringify(signal) },
-    });
-    await this.chat.sendMessage(message);
+    const clients = [...this.clients.values()].filter((client) => client.connected);
+    if (clients.length === 0) {
+      this.ready = false;
+      await this.connect();
+    }
+    const active = [...this.clients.values()].filter((client) => client.connected);
+    if (active.length === 0) throw new Error("免费双机信令节点暂时离线");
+    const topic = `${this.outboundTopic}/${signal.core.nonce}`;
+    const expirySeconds = Math.max(
+      1,
+      Math.min(7 * 24 * 60 * 60, Math.ceil((signal.core.expiresAtMs - Date.now()) / 1000)),
+    );
+    try {
+      await firstSuccessful(active.map((client) =>
+        this.publish(client, topic, JSON.stringify(signal), expirySeconds)));
+    } catch {
+      throw new Error("双机连接请求发送失败，请稍后重试");
+    }
   }
 
   async close() {
-    if (this.historyPollTimer !== null) {
-      window.clearInterval(this.historyPollTimer);
-      this.historyPollTimer = null;
-    }
-    if (!this.chat || !this.chatNamespace) return;
-    this.chat.off(this.chatNamespace.EVENT.MESSAGE_RECEIVED, this.receiveMessages, this);
-    this.chat.off(this.chatNamespace.EVENT.CONVERSATION_LIST_UPDATED, this.conversationUpdated, this);
-    this.chat.off(this.chatNamespace.EVENT.SDK_READY, this.markReady, this);
-    this.chat.off(this.chatNamespace.EVENT.SDK_NOT_READY, this.markNotReady, this);
-    this.chat.off(this.chatNamespace.EVENT.KICKED_OUT, this.reconnect, this);
-    await this.chat.logout().catch(() => undefined);
-    this.chat = null;
-    this.chatNamespace = null;
+    const clients = [...this.clients.values()];
+    this.clients.clear();
     this.ready = false;
+    await Promise.all(clients.map((client) => new Promise<void>((resolve) => {
+      client.end(true, {}, () => resolve());
+    })));
   }
 }
 
