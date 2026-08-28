@@ -562,6 +562,10 @@ async function closePetMenus() {
   });
 }
 
+function notifyPetSubmenuHover(hovered: boolean) {
+  emitTo("pet-menu", "pet-submenu-hover-changed", hovered).catch(() => undefined);
+}
+
 function useCloseMenusWhenFocusLeaves() {
   useEffect(() => {
     let checkTimer = 0;
@@ -616,15 +620,31 @@ async function openPetSubmenu(mode: "status-menu" | "remote-menu") {
     url: `/?mode=${mode}`, title: "桌宠二级菜单", width, height,
     x: Math.round(x), y: Math.round(y), decorations: false, transparent: true,
     backgroundColor: [0, 0, 0, 0], alwaysOnTop: true, skipTaskbar: true,
-    shadow: false, resizable: false, focus: true,
+    // A hover-opened submenu must not steal focus from the primary menu.
+    // WebView2 can report both windows unfocused during that handoff and the
+    // outside-click guard would otherwise close the submenu immediately.
+    shadow: false, resizable: false, focus: false,
   });
 }
 
 function PetMenu() {
   const [activeSubmenu, setActiveSubmenu] = useState<"status-menu" | "remote-menu" | null>(null);
+  const hideTimerRef = useRef(0);
   useCloseMenusWhenFocusLeaves();
 
+  const cancelSubmenuHide = useCallback(() => {
+    window.clearTimeout(hideTimerRef.current);
+  }, []);
+  const scheduleSubmenuHide = useCallback(() => {
+    window.clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = window.setTimeout(() => {
+      setActiveSubmenu(null);
+      invoke("close_pet_submenu_window").catch(() => undefined);
+    }, 500);
+  }, []);
   const showSubmenu = async (mode: "status-menu" | "remote-menu") => {
+    cancelSubmenuHide();
+    if (activeSubmenu === mode) return;
     setActiveSubmenu(mode);
     await openPetSubmenu(mode);
   };
@@ -633,14 +653,27 @@ function PetMenu() {
     await closePetMenus();
   };
 
+  useEffect(() => {
+    const hoverListener = listen<boolean>("pet-submenu-hover-changed", (event) => {
+      if (event.payload) cancelSubmenuHide();
+      else scheduleSubmenuHide();
+    });
+    return () => {
+      window.clearTimeout(hideTimerRef.current);
+      hoverListener.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, [cancelSubmenuHide, scheduleSubmenuHide]);
+
   return (
     <main className="menu-window-shell">
       <nav className="pet-menu primary-pet-menu">
         <button className={activeSubmenu === "remote-menu" ? "active" : ""}
-          onClick={() => showSubmenu("remote-menu")}>看看TA在干嘛<span>›</span></button>
+          onPointerEnter={() => showSubmenu("remote-menu")}
+          onPointerLeave={scheduleSubmenuHide}>看看TA在干嘛<span>›</span></button>
         <button className={activeSubmenu === "status-menu" ? "active" : ""}
-          onClick={() => showSubmenu("status-menu")}>桌宠状态<span>›</span></button>
-        <button onClick={openSettingsFromMenu}>设置</button>
+          onPointerEnter={() => showSubmenu("status-menu")}
+          onPointerLeave={scheduleSubmenuHide}>桌宠状态<span>›</span></button>
+        <button onPointerEnter={scheduleSubmenuHide} onClick={openSettingsFromMenu}>设置</button>
       </nav>
     </main>
   );
@@ -652,13 +685,15 @@ function PetStatusMenu() {
 
   const choose = async (status: PetStatusId) => {
     setSelected(status);
+    await invoke("set_pet_status", { status });
     localStorage.setItem(PET_STATUS_KEY, status);
-    await emitTo("main", "pet-status-selected", status).catch(() => undefined);
     await closePetMenus();
   };
 
   return (
-    <main className="menu-window-shell submenu-window-shell">
+    <main className="menu-window-shell submenu-window-shell"
+      onPointerEnter={() => notifyPetSubmenuHover(true)}
+      onPointerLeave={() => notifyPetSubmenuHover(false)}>
       <nav className="pet-menu status-submenu" aria-label="桌宠状态">
         {PET_STATUS_OPTIONS.map((option) => (
           <button key={option.id} role="menuitemradio" aria-checked={selected === option.id}
@@ -691,7 +726,9 @@ function RemotePetMenu() {
   };
 
   return (
-    <main className="menu-window-shell submenu-window-shell">
+    <main className="menu-window-shell submenu-window-shell"
+      onPointerEnter={() => notifyPetSubmenuHover(true)}
+      onPointerLeave={() => notifyPetSubmenuHover(false)}>
       <section className="pet-menu remote-submenu">
         <div className="partner-pet-status">
           <span>{profile.partnerName}的状态</span>
@@ -721,6 +758,16 @@ function Pet() {
   const realtimeRef = useRef<RealtimeMessaging | null>(null);
   const publisherRef = useRef<ScreenPublisher | null>(null);
   const petStatusRef = useRef<PetStatusId>(petStatus);
+
+  const broadcastPetStatus = useCallback(async (status: PetStatusId) => {
+    const messaging = realtimeRef.current;
+    if (!messaging) return;
+    const signal = await invoke<SignedSignal>("make_realtime_signal", {
+      messageType: "petStatus",
+      payload: { status, updatedAtMs: Date.now() } satisfies PetStatusSignal,
+    });
+    await messaging.send(signal);
+  }, []);
 
   useEffect(() => {
     invoke<AppProfile>("app_profile").then(setProfile).catch(() => undefined);
@@ -786,6 +833,18 @@ function Pet() {
     localStorage.setItem(PET_STATUS_KEY, petStatus);
     animationRef.current?.setFixedAction(petStatus === "free" ? null : petStatus);
   }, [petStatus]);
+
+  useEffect(() => {
+    const statusListener = listen<PetStatusId>("pet-status-selected", (event) => {
+      if (!isPetStatus(event.payload)) return;
+      petStatusRef.current = event.payload;
+      localStorage.setItem(PET_STATUS_KEY, event.payload);
+      setPetStatus(event.payload);
+      broadcastPetStatus(event.payload)
+        .catch((reason) => console.warn("桌宠状态暂未同步给对方", reason));
+    });
+    return () => { statusListener.then((dispose) => dispose()).catch(() => undefined); };
+  }, [broadcastPetStatus]);
 
   useEffect(() => {
     animationRef.current?.updateExternalState({ screenSharing: isSharing });
@@ -1026,12 +1085,6 @@ function Pet() {
         console.error("结束查看通知发送失败", reason);
       }
     });
-    const petStatusListener = listen<PetStatusId>("pet-status-selected", async (event) => {
-      if (!isPetStatus(event.payload)) return;
-      petStatusRef.current = event.payload;
-      setPetStatus(event.payload);
-      await sendStatus().catch((reason) => console.warn("桌宠状态暂未同步给对方", reason));
-    });
     const partnerStatusRequestListener = listen("request-partner-pet-status", () => {
       requestPartnerStatus().catch((reason) => console.warn("暂时无法获取对方桌宠状态", reason));
     });
@@ -1041,7 +1094,6 @@ function Pet() {
       signalListener.then((dispose) => dispose()).catch(() => undefined);
       viewerPeerListener.then((dispose) => dispose()).catch(() => undefined);
       viewerStopListener.then((dispose) => dispose()).catch(() => undefined);
-      petStatusListener.then((dispose) => dispose()).catch(() => undefined);
       partnerStatusRequestListener.then((dispose) => dispose()).catch(() => undefined);
       bindingListener.then((dispose) => dispose()).catch(() => undefined);
       publisher.stop().catch(() => undefined);

@@ -174,6 +174,28 @@ fn close_pet_menu_windows(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn close_pet_submenu_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("pet-submenu") {
+        let _ = window.destroy();
+    }
+}
+
+#[tauri::command]
+fn set_pet_status(app: tauri::AppHandle, status: String) -> Result<(), String> {
+    const ALLOWED: [&str; 8] = [
+        "free", "happy", "angry", "dance", "eat", "drink", "sleep", "work",
+    ];
+    if !ALLOWED.contains(&status.as_str()) {
+        return Err("未知的桌宠状态".into());
+    }
+    // Emit before returning to the submenu. This guarantees the main window
+    // receives the selection before the submenu asks the native process to
+    // destroy both menu windows.
+    app.emit_to("main", "pet-status-selected", status)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn pet_menu_has_focus(app: tauri::AppHandle) -> bool {
     ["pet-menu", "pet-submenu"].into_iter().any(|label| {
         app.get_webview_window(label)
@@ -570,7 +592,9 @@ pub fn run() {
             ensure_screen_capture_permission,
             close_viewer_window,
             close_pet_menu_windows,
+            close_pet_submenu_window,
             pet_menu_has_focus,
+            set_pet_status,
             wait_for_primary_mouse_release,
             system_audio_playing,
             system_idle_seconds,
