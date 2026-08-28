@@ -164,19 +164,18 @@ fn close_viewer_window(app: tauri::AppHandle, _session: Option<Value>) -> Result
 
 #[tauri::command]
 fn close_pet_menu_windows(app: tauri::AppHandle) {
-    // Close both surfaces in the native process. A submenu cannot reliably
-    // destroy itself and then continue executing JavaScript in every WebView.
-    for label in ["pet-submenu", "pet-menu"] {
-        if let Some(window) = app.get_webview_window(label) {
-            let _ = window.destroy();
-        }
+    if let Some(window) = app.get_webview_window("pet-menu") {
+        let _ = window.destroy();
     }
 }
 
 #[tauri::command]
-fn close_pet_submenu_window(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("pet-submenu") {
-        let _ = window.destroy();
+fn trigger_pet_menu_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    match action.as_str() {
+        "viewer" | "settings" => app
+            .emit_to("main", "pet-menu-action", action)
+            .map_err(|error| error.to_string()),
+        _ => Err("未知的菜单操作".into()),
     }
 }
 
@@ -197,11 +196,9 @@ fn set_pet_status(app: tauri::AppHandle, status: String) -> Result<(), String> {
 
 #[tauri::command]
 fn pet_menu_has_focus(app: tauri::AppHandle) -> bool {
-    ["pet-menu", "pet-submenu"].into_iter().any(|label| {
-        app.get_webview_window(label)
-            .and_then(|window| window.is_focused().ok())
-            .unwrap_or(false)
-    })
+    app.get_webview_window("pet-menu")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -210,20 +207,18 @@ fn pet_menu_pointer_inside(app: tauri::AppHandle) -> bool {
         return false;
     };
 
-    ["pet-menu", "pet-submenu"].into_iter().any(|label| {
-        let Some(window) = app.get_webview_window(label) else {
-            return false;
-        };
-        let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
-            return false;
-        };
-        let padding = 8.0;
-        let left = position.x as f64 - padding;
-        let top = position.y as f64 - padding;
-        let right = position.x as f64 + size.width as f64 + padding;
-        let bottom = position.y as f64 + size.height as f64 + padding;
-        cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
-    })
+    let Some(window) = app.get_webview_window("pet-menu") else {
+        return false;
+    };
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return false;
+    };
+    let padding = 8.0;
+    let left = position.x as f64 - padding;
+    let top = position.y as f64 - padding;
+    let right = position.x as f64 + size.width as f64 + padding;
+    let bottom = position.y as f64 + size.height as f64 + padding;
+    cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
 }
 
 #[tauri::command]
@@ -614,7 +609,7 @@ pub fn run() {
             ensure_screen_capture_permission,
             close_viewer_window,
             close_pet_menu_windows,
-            close_pet_submenu_window,
+            trigger_pet_menu_action,
             pet_menu_has_focus,
             pet_menu_pointer_inside,
             set_pet_status,
