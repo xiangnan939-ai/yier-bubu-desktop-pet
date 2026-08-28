@@ -491,6 +491,8 @@ impl BindingManager {
             "viewIce" => "view-ice",
             "viewStop" => "view-stop",
             "viewError" => "view-error",
+            "petStatus" => "pet-status",
+            "petStatusRequest" => "pet-status-request",
             "unbindRequest" => {
                 let request: SignedUnbindRequest = serde_json::from_value(signal.core.payload)
                     .map_err(|error| error.to_string())?;

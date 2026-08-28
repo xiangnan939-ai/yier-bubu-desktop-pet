@@ -26,6 +26,20 @@ button, input { font: inherit; }
 }
 .pet-menu button { border: 0; border-radius: 8px; padding: 9px 10px; color: #51352b; background: transparent; text-align: left; cursor: pointer; font-size: 12px; }
 .pet-menu button:hover { background: #f5e6dc; }
+.primary-pet-menu button { display: flex; align-items: center; justify-content: space-between; }
+.primary-pet-menu button.active { background: #f5e6dc; }
+.primary-pet-menu button span { color: #a78b80; font-size: 17px; line-height: 10px; }
+.submenu-window-shell { padding-left: 0; }
+.status-submenu { display: grid; grid-template-rows: repeat(8, 1fr); }
+.status-submenu button { display: flex; align-items: center; gap: 7px; padding: 5px 9px; }
+.status-submenu button.selected { color: #c55363; background: #fff0ee; font-weight: 700; }
+.menu-check { width: 13px; color: #d66574; text-align: center; font-size: 12px; }
+.remote-submenu { display: grid; grid-template-rows: 1fr auto; gap: 5px; }
+.partner-pet-status { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 7px 5px; border-bottom: 1px solid #f0e2da; }
+.partner-pet-status span { overflow: hidden; color: #8b7369; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.partner-pet-status strong { flex: none; color: #d06271; font-size: 12px; }
+.remote-submenu button.view-desktop-button { color: white; background: #dc7480; text-align: center; font-weight: 700; }
+.remote-submenu button.view-desktop-button:hover { background: #cf6673; }
 
 .settings-shell { width: 100%; min-height: 100%; padding: 24px; overflow: auto; background: #fffaf6; color: #4a3028; user-select: text; }
 .settings-shell header { margin-bottom: 18px; }

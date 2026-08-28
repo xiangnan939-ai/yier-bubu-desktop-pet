@@ -13,6 +13,7 @@ import type {
   AnimationMode,
   AnimationSnapshot,
   ExternalAnimationState,
+  FixedPetAction,
   MacroState,
   PetAnimationEvent,
   PetContext,
@@ -28,6 +29,7 @@ type StateMachineOptions = {
   moveWindow: (x: number, y: number) => Promise<void>;
   walkChance?: number;
   random?: () => number;
+  fixedAction?: FixedPetAction | null;
 };
 
 type DisplayResult = { action: string; durationMs: number };
@@ -68,6 +70,7 @@ export class PetAnimationStateMachine {
   private mirrored = false;
   private configuredWalkChance: number;
   private dragging = false;
+  private fixedAction: FixedPetAction | null;
   private partnerOfflineSince: number | null = null;
   private recentClicks: number[] = [];
   private context: PetContext = {
@@ -92,6 +95,7 @@ export class PetAnimationStateMachine {
     this.moveWindow = options.moveWindow;
     this.random = options.random ?? Math.random;
     this.configuredWalkChance = options.walkChance ?? DEFAULT_WALK_CHANCE;
+    this.fixedAction = options.fixedAction ?? null;
     this.sourceFacesLeft = this.role === "bubu";
     this.sensors = new ContextSensors({
       onAudioChange: (playing) => this.updateAudio(playing),
@@ -103,7 +107,7 @@ export class PetAnimationStateMachine {
     if (this.running) return;
     this.running = true;
     this.sensors.start();
-    this.beginAmbient("idle");
+    this.resumeBaseAnimation("idle");
   }
 
   stop() {
@@ -122,6 +126,13 @@ export class PetAnimationStateMachine {
 
   updateWalkChance(chance: number) {
     this.configuredWalkChance = Math.min(1, Math.max(0, chance));
+  }
+
+  setFixedAction(action: FixedPetAction | null) {
+    if (action === this.fixedAction) return;
+    this.fixedAction = action;
+    if (!this.running || this.dragging || this.mode === "interaction") return;
+    this.resumeBaseAnimation();
   }
 
   updateExternalState(state: ExternalAnimationState) {
@@ -202,7 +213,11 @@ export class PetAnimationStateMachine {
     if (playing === this.context.audioPlaying) return;
     this.context.audioPlaying = playing;
     this.refreshMacroState();
-    if (playing) {
+    if (this.fixedAction) {
+      if (this.mode === "music" || this.mode === "ambient" || this.mode === "walking") {
+        this.beginFixed();
+      }
+    } else if (playing) {
       if (this.mode !== "interaction" && this.mode !== "dragging") this.beginMusic();
     } else if (this.mode === "music") {
       // Music is the one animation source that follows a live signal. Once
@@ -221,8 +236,29 @@ export class PetAnimationStateMachine {
   private async runInteraction(action: string, operation: number) {
     const result = await this.displayAction(action, false, operation);
     if (!result || !await this.waitFor(result.durationMs, operation)) return;
-    if (this.context.audioPlaying) this.beginMusic();
-    else this.beginAmbient();
+    this.resumeBaseAnimation();
+  }
+
+  private resumeBaseAnimation(preferredAction?: string) {
+    if (this.fixedAction) this.beginFixed();
+    else if (this.context.audioPlaying) this.beginMusic();
+    else this.beginAmbient(preferredAction);
+  }
+
+  private beginFixed() {
+    if (!this.running || this.dragging || !this.fixedAction) return;
+    const operation = ++this.operationVersion;
+    this.mode = "fixed";
+    void this.runFixed(operation);
+  }
+
+  private async runFixed(operation: number) {
+    while (this.isCurrent(operation) && this.fixedAction && !this.dragging) {
+      const result = await this.displayAction(this.fixedAction, false, operation);
+      if (!result || !await this.waitFor(result.durationMs, operation)) return;
+      this.previousAction = result.action;
+    }
+    if (this.isCurrent(operation) && !this.dragging) this.resumeBaseAnimation();
   }
 
   private beginMusic() {
@@ -238,7 +274,7 @@ export class PetAnimationStateMachine {
       const result = await this.displayAction("dance", false, operation);
       if (!result || !await this.waitFor(result.durationMs, operation)) return;
     }
-    if (this.isCurrent(operation) && !this.dragging) this.beginAmbient();
+    if (this.isCurrent(operation) && !this.dragging) this.resumeBaseAnimation();
   }
 
   private beginAmbient(preferredAction?: string) {
@@ -280,7 +316,7 @@ export class PetAnimationStateMachine {
       const pause = timing.base + this.random() * timing.random;
       if (!await this.waitFor(pause, operation)) return;
     }
-    if (this.isCurrent(operation) && this.context.audioPlaying && !this.dragging) this.beginMusic();
+    if (this.isCurrent(operation) && !this.dragging) this.resumeBaseAnimation();
   }
 
   private async performWalk(operation: number): Promise<string | undefined> {

@@ -7,7 +7,9 @@ export type MacroState =
   | "annoyed"
   | "sad";
 
-export type AnimationMode = "ambient" | "walking" | "music" | "interaction" | "dragging";
+export type AnimationMode = "ambient" | "fixed" | "walking" | "music" | "interaction" | "dragging";
+
+export type FixedPetAction = "happy" | "angry" | "dance" | "eat" | "drink" | "sleep" | "work";
 
 export type PetAnimationEvent =
   | { type: "click" }
