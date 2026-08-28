@@ -95,6 +95,7 @@ const PARTNER_PET_STATUS_KEY = "partnerPetStatus";
 
 type PetStatusId = "free" | FixedPetAction;
 type PetStatusSignal = { status: PetStatusId; updatedAtMs: number };
+type PetSubmenuMode = "status-menu" | "remote-menu";
 
 const PET_STATUS_OPTIONS: ReadonlyArray<{ id: PetStatusId; label: string }> = [
   { id: "free", label: "自由" },
@@ -572,8 +573,11 @@ function useCloseMenusWhenFocusLeaves() {
     const scheduleCheck = () => {
       window.clearTimeout(checkTimer);
       checkTimer = window.setTimeout(async () => {
-        const focused = await invoke<boolean>("pet_menu_has_focus").catch(() => false);
-        if (!focused) await closePetMenus();
+        const [focused, pointerInside] = await Promise.all([
+          invoke<boolean>("pet_menu_has_focus").catch(() => false),
+          invoke<boolean>("pet_menu_pointer_inside").catch(() => false),
+        ]);
+        if (!focused && !pointerInside) await closePetMenus();
       }, 260);
     };
     const onKey = (event: KeyboardEvent) => {
@@ -592,7 +596,7 @@ function useCloseMenusWhenFocusLeaves() {
   }, []);
 }
 
-async function openPetSubmenu(mode: "status-menu" | "remote-menu") {
+async function openPetSubmenu(mode: PetSubmenuMode) {
   const width = mode === "status-menu" ? STATUS_MENU_WIDTH : REMOTE_MENU_WIDTH;
   const height = mode === "status-menu" ? STATUS_MENU_HEIGHT : REMOTE_MENU_HEIGHT;
   const menu = await WebviewWindow.getByLabel("pet-menu");
@@ -628,26 +632,49 @@ async function openPetSubmenu(mode: "status-menu" | "remote-menu") {
 }
 
 function PetMenu() {
-  const [activeSubmenu, setActiveSubmenu] = useState<"status-menu" | "remote-menu" | null>(null);
+  const [activeSubmenu, setActiveSubmenu] = useState<PetSubmenuMode | null>(null);
   const hideTimerRef = useRef(0);
+  const activeSubmenuRef = useRef<PetSubmenuMode | null>(null);
+  const submenuOpenRequestRef = useRef(0);
+  const submenuCloseRequestRef = useRef(0);
+  const submenuQueueRef = useRef(Promise.resolve());
   useCloseMenusWhenFocusLeaves();
 
   const cancelSubmenuHide = useCallback(() => {
     window.clearTimeout(hideTimerRef.current);
   }, []);
-  const scheduleSubmenuHide = useCallback(() => {
+  const scheduleSubmenuHide = useCallback((respectPointerBounds = true) => {
+    const requestId = ++submenuCloseRequestRef.current;
     window.clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = window.setTimeout(() => {
+    hideTimerRef.current = window.setTimeout(async () => {
+      const pointerInside = respectPointerBounds
+        ? await invoke<boolean>("pet_menu_pointer_inside").catch(() => false)
+        : false;
+      if (pointerInside || submenuCloseRequestRef.current !== requestId) return;
+      activeSubmenuRef.current = null;
       setActiveSubmenu(null);
       invoke("close_pet_submenu_window").catch(() => undefined);
     }, 500);
   }, []);
-  const showSubmenu = async (mode: "status-menu" | "remote-menu") => {
+  const showSubmenu = (mode: PetSubmenuMode) => {
     cancelSubmenuHide();
-    if (activeSubmenu === mode) return;
+    submenuCloseRequestRef.current += 1;
+    const requestId = ++submenuOpenRequestRef.current;
+    activeSubmenuRef.current = mode;
     setActiveSubmenu(mode);
-    await openPetSubmenu(mode);
+    submenuQueueRef.current = submenuQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (submenuOpenRequestRef.current !== requestId) return;
+        await openPetSubmenu(mode);
+        const latestMode = activeSubmenuRef.current;
+        if (submenuOpenRequestRef.current !== requestId && latestMode) {
+          await openPetSubmenu(latestMode);
+        }
+      });
   };
+  const hideSubmenuSoon = () => scheduleSubmenuHide();
+  const hideSubmenuFromPlainItem = () => scheduleSubmenuHide(false);
   const openSettingsFromMenu = async () => {
     await emitTo("main", "pet-menu-action", "settings").catch(() => undefined);
     await closePetMenus();
@@ -669,11 +696,11 @@ function PetMenu() {
       <nav className="pet-menu primary-pet-menu">
         <button className={activeSubmenu === "remote-menu" ? "active" : ""}
           onPointerEnter={() => showSubmenu("remote-menu")}
-          onPointerLeave={scheduleSubmenuHide}>看看TA在干嘛<span>›</span></button>
+          onPointerLeave={hideSubmenuSoon}>看看TA在干嘛<span>›</span></button>
         <button className={activeSubmenu === "status-menu" ? "active" : ""}
           onPointerEnter={() => showSubmenu("status-menu")}
-          onPointerLeave={scheduleSubmenuHide}>桌宠状态<span>›</span></button>
-        <button onPointerEnter={scheduleSubmenuHide} onClick={openSettingsFromMenu}>设置</button>
+          onPointerLeave={hideSubmenuSoon}>桌宠状态<span>›</span></button>
+        <button onPointerEnter={hideSubmenuFromPlainItem} onClick={openSettingsFromMenu}>设置</button>
       </nav>
     </main>
   );

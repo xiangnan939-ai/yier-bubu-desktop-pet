@@ -205,6 +205,28 @@ fn pet_menu_has_focus(app: tauri::AppHandle) -> bool {
 }
 
 #[tauri::command]
+fn pet_menu_pointer_inside(app: tauri::AppHandle) -> bool {
+    let Ok(cursor) = app.cursor_position() else {
+        return false;
+    };
+
+    ["pet-menu", "pet-submenu"].into_iter().any(|label| {
+        let Some(window) = app.get_webview_window(label) else {
+            return false;
+        };
+        let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+            return false;
+        };
+        let padding = 8.0;
+        let left = position.x as f64 - padding;
+        let top = position.y as f64 - padding;
+        let right = position.x as f64 + size.width as f64 + padding;
+        let bottom = position.y as f64 + size.height as f64 + padding;
+        cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom
+    })
+}
+
+#[tauri::command]
 async fn wait_for_primary_mouse_release() {
     #[cfg(target_os = "windows")]
     {
@@ -594,6 +616,7 @@ pub fn run() {
             close_pet_menu_windows,
             close_pet_submenu_window,
             pet_menu_has_focus,
+            pet_menu_pointer_inside,
             set_pet_status,
             wait_for_primary_mouse_release,
             system_audio_playing,
