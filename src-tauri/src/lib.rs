@@ -9,8 +9,8 @@ use std::{
 use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{ipc::Response, Emitter, Manager};
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri::{ipc::Response, plugin::TauriPlugin, Emitter, Manager, Runtime};
+use tauri_plugin_autostart::{Builder as AutoStartBuilder, MacosLauncher, ManagerExt};
 #[cfg(not(target_os = "macos"))]
 use xcap::Monitor;
 
@@ -29,6 +29,7 @@ use cloud_binding::{
 };
 
 const MAX_STREAM_WIDTH: u32 = 1_280;
+const AUTOSTART_APP_NAME: &str = "一二布布私人桌宠";
 
 #[derive(Clone, Default)]
 struct ScreenServerState {
@@ -560,6 +561,41 @@ fn configure_webview_network() {
     std::env::set_var(KEY, direct_webview_network_arguments(&current));
 }
 
+fn should_ensure_autostart() -> bool {
+    !cfg!(debug_assertions) && std::env::var_os("YIER_BUBU_SKIP_AUTOSTART").is_none()
+}
+
+fn ensure_autostart_enabled<R: tauri::Runtime, M: Manager<R>>(manager: &M) {
+    if !should_ensure_autostart() {
+        return;
+    }
+
+    let autostart = manager.autolaunch();
+    match autostart.is_enabled() {
+        Ok(true) => {}
+        Ok(false) => {
+            if let Err(error) = autostart.enable() {
+                eprintln!("failed to enable autostart: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("failed to read autostart status: {error}");
+            if let Err(enable_error) = autostart.enable() {
+                eprintln!("failed to enable autostart after status error: {enable_error}");
+            }
+        }
+    }
+}
+
+fn build_autostart_plugin<R: Runtime>() -> TauriPlugin<R> {
+    let builder = AutoStartBuilder::new()
+        .app_name(AUTOSTART_APP_NAME)
+        .arg("--autostart");
+    #[cfg(target_os = "macos")]
+    let builder = builder.macos_launcher(MacosLauncher::LaunchAgent);
+    builder.build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "windows")]
@@ -571,10 +607,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             activate_app(app);
         }))
-        .plugin(tauri_plugin_autostart::init(
-            MacosLauncher::LaunchAgent,
-            None,
-        ))
+        .plugin(build_autostart_plugin())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
@@ -582,13 +615,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))?;
             }
-            let skip_autostart = std::env::var_os("YIER_BUBU_SKIP_AUTOSTART").is_some();
-            if !cfg!(debug_assertions) && !skip_autostart {
-                let autostart = app.autolaunch();
-                if !autostart.is_enabled().unwrap_or(false) {
-                    autostart.enable()?;
-                }
-            }
+            ensure_autostart_enabled(app);
             let binding_manager =
                 BindingManager::new(app.handle().clone(), app.path().app_data_dir()?)
                     .map_err(std::io::Error::other)?;
