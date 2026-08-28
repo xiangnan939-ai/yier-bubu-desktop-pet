@@ -134,4 +134,12 @@ jobs:
         shell: bash
         run: |
           gh release upload "$GITHUB_REF_NAME" release-assets/latest.json --clobber
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          for ASSET in \
+            "_${VERSION}_x64-setup.exe" \
+            "_${VERSION}_x64-setup.exe.sig" \
+            "_aarch64.app.tar.gz" \
+            "_aarch64.app.tar.gz.sig"; do
+            gh release delete-asset "$GITHUB_REF_NAME" "$ASSET" --yes
+          done
           gh release edit "$GITHUB_REF_NAME" --draft=false
