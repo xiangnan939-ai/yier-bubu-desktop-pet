@@ -554,41 +554,35 @@ function Settings() {
 }
 
 async function closePetMenus() {
-  const [menu, submenu] = await Promise.all([
-    WebviewWindow.getByLabel("pet-menu"),
-    WebviewWindow.getByLabel("pet-submenu"),
-  ]);
-  await Promise.all([
-    submenu?.destroy().catch(() => undefined),
-    menu?.destroy().catch(() => undefined),
-  ]);
+  await invoke("close_pet_menu_windows").catch(async () => {
+    // Browser-only development fallback. Packaged apps always use the native
+    // command so the calling submenu can be destroyed safely.
+    const current = getCurrentWindow();
+    await current.destroy().catch(() => undefined);
+  });
 }
 
 function useCloseMenusWhenFocusLeaves() {
   useEffect(() => {
     let checkTimer = 0;
-    const check = () => {
+    const scheduleCheck = () => {
       window.clearTimeout(checkTimer);
       checkTimer = window.setTimeout(async () => {
-        const [menu, submenu] = await Promise.all([
-          WebviewWindow.getByLabel("pet-menu"),
-          WebviewWindow.getByLabel("pet-submenu"),
-        ]);
-        const [menuFocused, submenuFocused] = await Promise.all([
-          menu?.isFocused().catch(() => false) ?? false,
-          submenu?.isFocused().catch(() => false) ?? false,
-        ]);
-        if (!menuFocused && !submenuFocused) await closePetMenus();
-      }, 140);
+        const focused = await invoke<boolean>("pet_menu_has_focus").catch(() => false);
+        if (!focused) await closePetMenus();
+      }, 260);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") closePetMenus();
     };
-    window.addEventListener("blur", check);
+    const focusListener = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) window.clearTimeout(checkTimer);
+      else scheduleCheck();
+    });
     window.addEventListener("keydown", onKey);
     return () => {
       window.clearTimeout(checkTimer);
-      window.removeEventListener("blur", check);
+      focusListener.then((dispose) => dispose()).catch(() => undefined);
       window.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -622,7 +616,7 @@ async function openPetSubmenu(mode: "status-menu" | "remote-menu") {
     url: `/?mode=${mode}`, title: "桌宠二级菜单", width, height,
     x: Math.round(x), y: Math.round(y), decorations: false, transparent: true,
     backgroundColor: [0, 0, 0, 0], alwaysOnTop: true, skipTaskbar: true,
-    shadow: false, resizable: false,
+    shadow: false, resizable: false, focus: true,
   });
 }
 
@@ -1080,15 +1074,12 @@ function Pet() {
   const openPetMenu = async () => {
     const position = await positionBesidePet(MENU_WIDTH, MENU_HEIGHT, 6);
     try {
-      const existing = await WebviewWindow.getByLabel("pet-menu");
-      const existingSubmenu = await WebviewWindow.getByLabel("pet-submenu");
-      if (existingSubmenu) await existingSubmenu.destroy();
-      if (existing) await existing.destroy();
+      await invoke("close_pet_menu_windows").catch(() => undefined);
       new WebviewWindow("pet-menu", {
         url: "/?mode=menu", title: "桌宠菜单", width: MENU_WIDTH, height: MENU_HEIGHT,
         x: position?.x, y: position?.y, decorations: false, transparent: true,
         backgroundColor: [0, 0, 0, 0], alwaysOnTop: true, skipTaskbar: true,
-        shadow: false, resizable: false,
+        shadow: false, resizable: false, focus: true,
       });
     } catch {
       await openSettings();

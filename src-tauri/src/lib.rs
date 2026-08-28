@@ -163,6 +163,26 @@ fn close_viewer_window(app: tauri::AppHandle, _session: Option<Value>) -> Result
 }
 
 #[tauri::command]
+fn close_pet_menu_windows(app: tauri::AppHandle) {
+    // Close both surfaces in the native process. A submenu cannot reliably
+    // destroy itself and then continue executing JavaScript in every WebView.
+    for label in ["pet-submenu", "pet-menu"] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.destroy();
+        }
+    }
+}
+
+#[tauri::command]
+fn pet_menu_has_focus(app: tauri::AppHandle) -> bool {
+    ["pet-menu", "pet-submenu"].into_iter().any(|label| {
+        app.get_webview_window(label)
+            .and_then(|window| window.is_focused().ok())
+            .unwrap_or(false)
+    })
+}
+
+#[tauri::command]
 async fn wait_for_primary_mouse_release() {
     #[cfg(target_os = "windows")]
     {
@@ -549,6 +569,8 @@ pub fn run() {
             capture_screen_frame,
             ensure_screen_capture_permission,
             close_viewer_window,
+            close_pet_menu_windows,
+            pet_menu_has_focus,
             wait_for_primary_mouse_release,
             system_audio_playing,
             system_idle_seconds,
