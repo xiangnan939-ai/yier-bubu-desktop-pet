@@ -39,6 +39,7 @@ const ACTION_FALLBACKS: Record<string, string[]> = {
   dance: ["happy", "idle"],
   drag: ["click", "idle"],
   drop: ["idle"],
+  hugging: ["idle"],
   shared: ["watching", "idle"],
   watching: ["look", "idle"],
   walk: ["idle"],
@@ -70,6 +71,7 @@ export class PetAnimationStateMachine {
   private mirrored = false;
   private configuredWalkChance: number;
   private dragging = false;
+  private holdingFile = false;
   private fixedAction: FixedPetAction | null;
   private partnerOfflineSince: number | null = null;
   private recentClicks: number[] = [];
@@ -131,7 +133,7 @@ export class PetAnimationStateMachine {
   setFixedAction(action: FixedPetAction | null) {
     if (action === this.fixedAction) return;
     this.fixedAction = action;
-    if (!this.running || this.dragging || this.mode === "interaction") return;
+    if (!this.running || this.dragging || this.holdingFile || this.mode === "interaction") return;
     this.resumeBaseAnimation();
   }
 
@@ -143,11 +145,16 @@ export class PetAnimationStateMachine {
       if (state.partnerOnline === false) this.partnerOfflineSince = Date.now();
       else this.partnerOfflineSince = null;
     }
+    if (state.holdingFile !== undefined && state.holdingFile !== this.holdingFile) {
+      this.holdingFile = state.holdingFile;
+      if (this.running && !this.dragging) this.resumeBaseAnimation();
+    }
     this.refreshMacroState();
   }
 
   dispatch(event: PetAnimationEvent) {
     if (!this.running) return;
+    if (this.holdingFile) return;
     if (event.type === "click") {
       if (this.dragging) return;
       this.recentClicks.push(Date.now());
@@ -240,20 +247,37 @@ export class PetAnimationStateMachine {
   }
 
   private resumeBaseAnimation(preferredAction?: string) {
-    if (this.fixedAction) this.beginFixed();
+    if (this.holdingFile) this.beginHolding();
+    else if (this.fixedAction) this.beginFixed();
     else if (this.context.audioPlaying) this.beginMusic();
     else this.beginAmbient(preferredAction);
   }
 
+  private beginHolding() {
+    if (!this.running || this.dragging || !this.holdingFile) return;
+    const operation = ++this.operationVersion;
+    this.mode = "holding";
+    void this.runHolding(operation);
+  }
+
+  private async runHolding(operation: number) {
+    while (this.isCurrent(operation) && this.holdingFile && !this.dragging) {
+      const result = await this.displayAction("hugging", false, operation);
+      if (!result || !await this.waitFor(result.durationMs, operation)) return;
+      this.previousAction = result.action;
+    }
+    if (this.isCurrent(operation) && !this.dragging) this.resumeBaseAnimation();
+  }
+
   private beginFixed() {
-    if (!this.running || this.dragging || !this.fixedAction) return;
+    if (!this.running || this.dragging || this.holdingFile || !this.fixedAction) return;
     const operation = ++this.operationVersion;
     this.mode = "fixed";
     void this.runFixed(operation);
   }
 
   private async runFixed(operation: number) {
-    while (this.isCurrent(operation) && this.fixedAction && !this.dragging) {
+    while (this.isCurrent(operation) && this.fixedAction && !this.dragging && !this.holdingFile) {
       const result = await this.displayAction(this.fixedAction, false, operation);
       if (!result || !await this.waitFor(result.durationMs, operation)) return;
       this.previousAction = result.action;
@@ -262,7 +286,7 @@ export class PetAnimationStateMachine {
   }
 
   private beginMusic() {
-    if (!this.running || this.dragging) return;
+    if (!this.running || this.dragging || this.holdingFile) return;
     if (this.mode === "music") return;
     const operation = ++this.operationVersion;
     this.mode = "music";
@@ -270,7 +294,7 @@ export class PetAnimationStateMachine {
   }
 
   private async runMusic(operation: number) {
-    while (this.isCurrent(operation) && this.context.audioPlaying && !this.dragging) {
+    while (this.isCurrent(operation) && this.context.audioPlaying && !this.dragging && !this.holdingFile) {
       const result = await this.displayAction("dance", false, operation);
       if (!result || !await this.waitFor(result.durationMs, operation)) return;
     }
@@ -278,7 +302,7 @@ export class PetAnimationStateMachine {
   }
 
   private beginAmbient(preferredAction?: string) {
-    if (!this.running || this.dragging) return;
+    if (!this.running || this.dragging || this.holdingFile) return;
     const operation = ++this.operationVersion;
     this.mode = "ambient";
     void this.runAmbient(operation, preferredAction);
@@ -286,7 +310,7 @@ export class PetAnimationStateMachine {
 
   private async runAmbient(operation: number, initialAction?: string) {
     let preferredAction = initialAction;
-    while (this.isCurrent(operation) && !this.context.audioPlaying && !this.dragging) {
+    while (this.isCurrent(operation) && !this.context.audioPlaying && !this.dragging && !this.holdingFile) {
       this.refreshMacroState();
       const walkChance = walkChanceFor(this.macroState, this.configuredWalkChance);
       if (!preferredAction && this.library.has("walk") && this.random() < walkChance) {
@@ -322,7 +346,7 @@ export class PetAnimationStateMachine {
   private async performWalk(operation: number): Promise<string | undefined> {
     try {
       const metrics = await this.getWindowMetrics();
-      if (!this.isCurrent(operation) || this.context.audioPlaying || this.dragging) return undefined;
+      if (!this.isCurrent(operation) || this.context.audioPlaying || this.dragging || this.holdingFile) return undefined;
       const plan = planWalk(
         metrics,
         this.macroState,
@@ -335,7 +359,7 @@ export class PetAnimationStateMachine {
       const mirrored = shouldMirrorForWalk(plan.direction, this.sourceFacesLeft);
       void this.displayAction("walk", mirrored, operation);
       const startedAt = performance.now();
-      while (this.isCurrent(operation) && !this.context.audioPlaying && !this.dragging) {
+      while (this.isCurrent(operation) && !this.context.audioPlaying && !this.dragging && !this.holdingFile) {
         const progress = Math.min(1, (performance.now() - startedAt) / plan.durationMs);
         await this.moveWindow(
           Math.round(metrics.x + (plan.targetX - metrics.x) * progress),
@@ -344,7 +368,7 @@ export class PetAnimationStateMachine {
         if (progress >= 1) break;
         if (!await this.waitFor(33, operation)) return undefined;
       }
-      if (!this.isCurrent(operation) || this.context.audioPlaying || this.dragging) return undefined;
+      if (!this.isCurrent(operation) || this.context.audioPlaying || this.dragging || this.holdingFile) return undefined;
       this.previousAction = "walk";
       this.mode = "ambient";
       return plan.arrivalAction ?? undefined;

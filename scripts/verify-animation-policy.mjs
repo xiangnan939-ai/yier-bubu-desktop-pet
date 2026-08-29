@@ -51,19 +51,25 @@ for (const role of ["一二", "布布"]) {
   if (missingFixedActions.length) {
     throw new Error(`${role}：桌宠状态菜单缺少动作素材：${missingFixedActions.join("、")}`);
   }
-  const expectedAmbientActions = [...library.keys()].filter((action) => action !== "walk").sort();
+  if (!library.get("hugging")?.length) {
+    throw new Error(`${role}：文件中转站缺少 hugging 动作素材`);
+  }
+  const expectedAmbientActions = [...library.keys()]
+    .filter((action) => action !== "walk" && action !== "hugging")
+    .sort();
   for (const macroState of macroStates) {
     const weights = buildActionWeights(library, macroState, baseContext, "idle");
     const actualActions = weights.map(({ action }) => action).sort();
     if (JSON.stringify(actualActions) !== JSON.stringify(expectedAmbientActions)) {
       throw new Error(`${role}/${macroState}：非 walk 动作没有全部进入随机池`);
     }
-    if (weights.some(({ action, weight }) => action === "walk" || !(weight > 0))) {
-      throw new Error(`${role}/${macroState}：walk 进入了随机池，或存在零概率动作`);
+    if (weights.some(({ action, weight }) => action === "walk" || action === "hugging" || !(weight > 0))) {
+      throw new Error(`${role}/${macroState}：walk/hugging 进入了随机池，或存在零概率动作`);
     }
   }
-  console.log(`${role}：${expectedAmbientActions.length} 类非 walk 动作在全部宏观状态下均保留非零概率`);
+  console.log(`${role}：${expectedAmbientActions.length} 类非 walk/hugging 动作在全部宏观状态下均保留非零概率`);
   console.log(`${role}：7 种固定状态均有对应动作素材`);
+  console.log(`${role}：文件中转站 hugging 专属动作存在`);
 }
 
 if (walkChanceFor("sleeping", 0.24) !== 0 || walkChanceFor("active", 0.24) <= 0) {

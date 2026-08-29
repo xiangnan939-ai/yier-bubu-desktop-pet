@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
   LogicalPosition,
@@ -70,23 +72,68 @@ type UpdateProgress = {
   downloadedBytes: number;
   totalBytes: number | null;
 };
+type ComputerStatus = {
+  timestampMs: number;
+  uploadBytesPerSec: number | null;
+  downloadBytesPerSec: number | null;
+  cpuUsagePercent: number | null;
+  cpuTemperatureC: number | null;
+  gpuUsagePercent: number | null;
+  gpuTemperatureC: number | null;
+  memoryUsedBytes: number;
+  memoryTotalBytes: number;
+  memoryUsagePercent: number | null;
+};
+type FileTransitStatus = {
+  holding: boolean;
+  fileName: string | null;
+  originalPath: string | null;
+  storedPath: string | null;
+  sizeBytes: number | null;
+  placedAtMs: number | null;
+};
+type FileTransitDragResult = {
+  dropped: boolean;
+  message: string;
+};
+type DragDropPayload = {
+  type: "enter" | "over" | "drop" | "leave";
+  paths?: string[];
+  position?: { x: number; y: number };
+};
 function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function formatRate(value: number | null | undefined) {
+  return value == null ? "暂不可用" : `${formatBytes(value)}/s`;
+}
+
+function formatPercent(value: number | null | undefined) {
+  return value == null ? "暂不可用" : `${Math.round(value)}%`;
+}
+
+function formatTemperature(value: number | null | undefined) {
+  return value == null ? "暂不可用" : `${value.toFixed(1)}°C`;
 }
 
 const DEFAULT_PET_SIZE = 160;
 const MIN_PET_SIZE = 96;
 const MAX_PET_SIZE = 320;
 const PRIMARY_MENU_WIDTH = 164;
-const PRIMARY_MENU_HEIGHT = 132;
+const PRIMARY_MENU_HEIGHT = 176;
 const MENU_GAP = 4;
 const STATUS_MENU_WIDTH = 158;
 const STATUS_MENU_HEIGHT = 284;
 const REMOTE_MENU_WIDTH = 190;
-const MENU_WIDTH = PRIMARY_MENU_WIDTH + MENU_GAP + Math.max(STATUS_MENU_WIDTH, REMOTE_MENU_WIDTH) + 6;
-const MENU_HEIGHT = Math.max(PRIMARY_MENU_HEIGHT, STATUS_MENU_HEIGHT) + 6;
+const COMPUTER_MENU_WIDTH = 224;
+const COMPUTER_MENU_HEIGHT = 210;
+const SUBMENU_WIDTH = Math.max(STATUS_MENU_WIDTH, REMOTE_MENU_WIDTH, COMPUTER_MENU_WIDTH);
+const MENU_WIDTH = PRIMARY_MENU_WIDTH + MENU_GAP + SUBMENU_WIDTH + 6;
+const MENU_HEIGHT = Math.max(PRIMARY_MENU_HEIGHT, STATUS_MENU_HEIGHT, COMPUTER_MENU_HEIGHT) + 6;
 const SETTINGS_WIDTH = 420;
 const SETTINGS_HEIGHT = 700;
 const BINDING_WIDTH = 420;
@@ -97,7 +144,8 @@ const PARTNER_PET_STATUS_KEY = "partnerPetStatus";
 
 type PetStatusId = "free" | FixedPetAction;
 type PetStatusSignal = { status: PetStatusId; updatedAtMs: number };
-type PetSubmenuMode = "status-menu" | "remote-menu";
+type PetSubmenuMode = "status-menu" | "remote-menu" | "computer-menu";
+type MenuSide = "right" | "left";
 
 const PET_STATUS_OPTIONS: ReadonlyArray<{ id: PetStatusId; label: string }> = [
   { id: "free", label: "自由" },
@@ -133,6 +181,17 @@ function loadPartnerPetStatus(): PetStatusSignal | null {
     // Ignore old or incomplete cached state; a signed refresh is requested when the submenu opens.
   }
   return null;
+}
+
+function emptyFileTransitStatus(): FileTransitStatus {
+  return {
+    holding: false,
+    fileName: null,
+    originalPath: null,
+    storedPath: null,
+    sizeBytes: null,
+    placedAtMs: null,
+  };
 }
 
 const fallbackProfile: AppProfile = /Mac/i.test(navigator.userAgent)
@@ -208,6 +267,40 @@ async function positionBesidePet(width: number, height: number, gap = 12) {
   const x = right <= maxX ? right : left >= minX ? left : Math.min(maxX, Math.max(minX, right));
   const centeredY = petPosition.y + (petSize.height - height) / 2;
   return new LogicalPosition(Math.round(x), Math.round(Math.min(maxY, Math.max(minY, centeredY))));
+}
+
+async function positionMenuBesidePet(width: number, height: number, gap = 6): Promise<{ position: LogicalPosition; side: MenuSide } | null> {
+  const main = await WebviewWindow.getByLabel("main");
+  const monitor = await currentMonitor();
+  if (!main || !monitor) return null;
+
+  const [petPhysicalPosition, petPhysicalSize] = await Promise.all([
+    main.outerPosition(),
+    main.outerSize(),
+  ]);
+  const scale = monitor.scaleFactor;
+  const petPosition = petPhysicalPosition.toLogical(scale);
+  const petSize = petPhysicalSize.toLogical(scale);
+  const workPosition = monitor.workArea.position.toLogical(scale);
+  const workSize = monitor.workArea.size.toLogical(scale);
+  const minX = workPosition.x + 6;
+  const minY = workPosition.y + 6;
+  const maxX = workPosition.x + workSize.width - width - 6;
+  const maxY = workPosition.y + workSize.height - height - 6;
+  const rightX = petPosition.x + petSize.width + gap;
+  const leftX = petPosition.x - width - gap;
+  const hasRightSpace = rightX <= maxX;
+  const hasLeftSpace = leftX >= minX;
+  const side: MenuSide = hasRightSpace || !hasLeftSpace ? "right" : "left";
+  const rawX = side === "right" ? rightX : leftX;
+  const centeredY = petPosition.y + (petSize.height - height) / 2;
+  return {
+    position: new LogicalPosition(
+      Math.round(Math.min(maxX, Math.max(minX, rawX))),
+      Math.round(Math.min(maxY, Math.max(minY, centeredY))),
+    ),
+    side,
+  };
 }
 
 function Viewer() {
@@ -375,8 +468,18 @@ function Settings() {
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [installingApp, setInstallingApp] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
+  const [autostartBusy, setAutostartBusy] = useState(false);
+  const [autostartMessage, setAutostartMessage] = useState("正在读取系统开机自启动状态…");
 
   useEffect(() => {
+    isAutostartEnabled().then((enabled) => {
+      setAutostartEnabled(enabled);
+      setAutostartMessage(enabled ? "已开启，电脑启动后会自动显示桌宠。" : "已关闭，电脑启动后不会自动打开桌宠。");
+    }).catch((reason) => {
+      setAutostartEnabled(false);
+      setAutostartMessage(`读取开机自启动状态失败：${String(reason)}`);
+    });
     invoke<UpdateConfiguration>("update_configuration").then((value) => {
       setUpdateConfig(value);
       if (!value.appUpdateEnabled) {
@@ -446,6 +549,26 @@ function Settings() {
     emitTo("main", "settings-updated", { petSize: size }).catch(() => undefined);
   };
 
+  const toggleAutostart = async (enabled: boolean) => {
+    if (autostartBusy) return;
+    setAutostartBusy(true);
+    setError("");
+    setAutostartMessage(enabled ? "正在开启开机自启动…" : "正在关闭开机自启动…");
+    try {
+      if (enabled) await enableAutostart();
+      else await disableAutostart();
+      const actual = await isAutostartEnabled();
+      setAutostartEnabled(actual);
+      setAutostartMessage(actual ? "已开启，电脑启动后会自动显示桌宠。" : "已关闭，电脑启动后不会自动打开桌宠。");
+    } catch (reason) {
+      const actual = await isAutostartEnabled().catch(() => autostartEnabled ?? false);
+      setAutostartEnabled(actual);
+      setAutostartMessage(`修改开机自启动失败：${String(reason)}`);
+    } finally {
+      setAutostartBusy(false);
+    }
+  };
+
   const sendUnbindRequest = async () => {
     if (bindingBusy) return;
     setBindingBusy(true);
@@ -487,6 +610,20 @@ function Settings() {
         <input aria-label="桌宠大小" type="range" min={MIN_PET_SIZE} max={MAX_PET_SIZE} step="8"
           value={petSize} onChange={(event) => applyPetSize(Number(event.target.value))} />
         <div className="range-labels"><span>较小</span><span>默认 160px</span><span>较大</span></div>
+      </section>
+
+      <section className="settings-section autostart-section">
+        <div className="setting-heading">
+          <div>
+            <h2>开机自启动</h2>
+            <p>{autostartMessage}</p>
+          </div>
+          <button className={`switch-button ${autostartEnabled ? "on" : ""}`} role="switch"
+            aria-checked={autostartEnabled === true} disabled={autostartBusy || autostartEnabled === null}
+            onClick={() => toggleAutostart(!(autostartEnabled ?? false))}>
+            <span />
+          </button>
+        </div>
       </section>
 
       <section className="settings-section update-section">
@@ -599,7 +736,10 @@ function PetMenu() {
   const [selectedStatus, setSelectedStatus] = useState<PetStatusId>(loadPetStatus);
   const [profile, setProfile] = useState(fallbackProfile);
   const [partnerStatus, setPartnerStatus] = useState<PetStatusSignal | null>(loadPartnerPetStatus);
+  const [computerStatus, setComputerStatus] = useState<ComputerStatus | null>(null);
+  const [computerStatusMessage, setComputerStatusMessage] = useState("正在读取…");
   const hideTimerRef = useRef(0);
+  const menuSide = (new URLSearchParams(window.location.search).get("side") === "left" ? "left" : "right") satisfies MenuSide;
   useCloseMenusWhenFocusLeaves();
 
   const cancelSubmenuHide = useCallback(() => {
@@ -647,8 +787,30 @@ function PetMenu() {
     };
   }, []);
 
+  useEffect(() => {
+    if (activeSubmenu !== "computer-menu") return;
+    let stopped = false;
+    const refresh = () => {
+      invoke<ComputerStatus>("computer_status").then((status) => {
+        if (stopped) return;
+        setComputerStatus(status);
+        setComputerStatusMessage("");
+      }).catch((reason) => {
+        if (stopped) return;
+        setComputerStatus(null);
+        setComputerStatusMessage(`读取失败：${String(reason)}`);
+      });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSubmenu]);
+
   return (
-    <main className="menu-window-shell combo-menu-shell"
+    <main className={`menu-window-shell combo-menu-shell side-${menuSide}`}
       onPointerEnter={cancelSubmenuHide}
       onPointerLeave={scheduleMenuClose}>
       <nav className="pet-menu primary-pet-menu">
@@ -656,6 +818,8 @@ function PetMenu() {
           onPointerEnter={() => showSubmenu("remote-menu")}>看看TA在干嘛<span>›</span></button>
         <button className={activeSubmenu === "status-menu" ? "active" : ""}
           onPointerEnter={() => showSubmenu("status-menu")}>桌宠状态<span>›</span></button>
+        <button className={activeSubmenu === "computer-menu" ? "active" : ""}
+          onPointerEnter={() => showSubmenu("computer-menu")}>电脑状态<span>›</span></button>
         <button onPointerEnter={hideSubmenu} onClick={openSettingsFromMenu}>设置</button>
       </nav>
       {activeSubmenu === "remote-menu" && (
@@ -677,6 +841,21 @@ function PetMenu() {
           ))}
         </nav>
       )}
+      {activeSubmenu === "computer-menu" && (
+        <section className="pet-menu computer-submenu" aria-label="电脑状态">
+          {computerStatusMessage && <p>{computerStatusMessage}</p>}
+          {!computerStatusMessage && computerStatus && <>
+            <div><span>下载</span><strong>{formatRate(computerStatus.downloadBytesPerSec)}</strong></div>
+            <div><span>上传</span><strong>{formatRate(computerStatus.uploadBytesPerSec)}</strong></div>
+            <div><span>CPU</span><strong>{formatPercent(computerStatus.cpuUsagePercent)}</strong></div>
+            <div><span>CPU 温度</span><strong>{formatTemperature(computerStatus.cpuTemperatureC)}</strong></div>
+            <div><span>GPU</span><strong>{formatPercent(computerStatus.gpuUsagePercent)}</strong></div>
+            <div><span>GPU 温度</span><strong>{formatTemperature(computerStatus.gpuTemperatureC)}</strong></div>
+            <div><span>内存</span><strong>{formatPercent(computerStatus.memoryUsagePercent)}</strong></div>
+            <small>{formatBytes(computerStatus.memoryUsedBytes)} / {formatBytes(computerStatus.memoryTotalBytes)}</small>
+          </>}
+        </section>
+      )}
     </main>
   );
 }
@@ -695,10 +874,23 @@ function Pet() {
   });
   const [isSharing, setIsSharing] = useState(false);
   const [petSize, setPetSize] = useState(loadPetSize);
+  const [fileTransit, setFileTransit] = useState<FileTransitStatus>(emptyFileTransitStatus);
+  const [fileBubble, setFileBubble] = useState("");
+  const [fileDropHover, setFileDropHover] = useState(false);
   const animationRef = useRef<PetAnimationStateMachine | null>(null);
   const realtimeRef = useRef<RealtimeMessaging | null>(null);
   const publisherRef = useRef<ScreenPublisher | null>(null);
   const petStatusRef = useRef<PetStatusId>(petStatus);
+  const fileTransitRef = useRef<FileTransitStatus>(fileTransit);
+  const fileBubbleTimerRef = useRef(0);
+  const fileLongPressTimerRef = useRef(0);
+  const filePointerRef = useRef<{ pointerId: number; x: number; y: number; nativeDragStarted: boolean } | null>(null);
+
+  const showFileBubble = useCallback((message: string) => {
+    window.clearTimeout(fileBubbleTimerRef.current);
+    setFileBubble(message);
+    fileBubbleTimerRef.current = window.setTimeout(() => setFileBubble(""), 2_000);
+  }, []);
 
   const broadcastPetStatus = useCallback(async (status: PetStatusId) => {
     const messaging = realtimeRef.current;
@@ -759,6 +951,7 @@ function Pet() {
     });
     animationRef.current = engine;
     engine.start();
+    engine.updateExternalState({ holdingFile: fileTransitRef.current.holding });
     return () => {
       engine.stop();
       if (animationRef.current === engine) animationRef.current = null;
@@ -790,6 +983,58 @@ function Pet() {
   useEffect(() => {
     animationRef.current?.updateExternalState({ screenSharing: isSharing });
   }, [isSharing]);
+
+  useEffect(() => {
+    fileTransitRef.current = fileTransit;
+    animationRef.current?.updateExternalState({ holdingFile: fileTransit.holding });
+  }, [fileTransit]);
+
+  useEffect(() => {
+    let stopped = false;
+    invoke<FileTransitStatus>("file_transit_status").then((status) => {
+      if (!stopped) setFileTransit(status);
+    }).catch((reason) => showFileBubble(`文件中转站读取失败：${String(reason)}`));
+
+    const dragDropListener = getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event.payload as DragDropPayload;
+      if (payload.type === "enter" || payload.type === "over") {
+        setFileDropHover(true);
+        return;
+      }
+      if (payload.type === "leave") {
+        setFileDropHover(false);
+        return;
+      }
+      if (payload.type !== "drop") return;
+      setFileDropHover(false);
+      const paths = payload.paths ?? [];
+      if (!paths.length) return;
+      invoke<FileTransitStatus>("file_transit_store", { paths }).then((status) => {
+        setFileTransit(status);
+        showFileBubble(`已暂存 ${status.fileName ?? "文件"}`);
+      }).catch((reason) => showFileBubble(String(reason)));
+    });
+    const transitListener = listen<FileTransitStatus>("file-transit-updated", (event) => {
+      setFileTransit(event.payload ?? emptyFileTransitStatus());
+    });
+    const dragResultListener = listen<FileTransitDragResult>("file-transit-drag-finished", (event) => {
+      const result = event.payload;
+      window.clearTimeout(fileLongPressTimerRef.current);
+      filePointerRef.current = null;
+      showFileBubble(result?.message || (result?.dropped ? "文件已取出" : "文件还在这里"));
+      invoke<FileTransitStatus>("file_transit_status")
+        .then(setFileTransit)
+        .catch(() => undefined);
+    });
+    return () => {
+      stopped = true;
+      window.clearTimeout(fileBubbleTimerRef.current);
+      window.clearTimeout(fileLongPressTimerRef.current);
+      dragDropListener.then((dispose) => dispose()).catch(() => undefined);
+      transitListener.then((dispose) => dispose()).catch(() => undefined);
+      dragResultListener.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, [showFileBubble]);
 
   useEffect(() => {
     let stopped = false;
@@ -1064,13 +1309,45 @@ function Pet() {
     return () => { unlisten.then((dispose) => dispose()).catch(() => undefined); };
   }, []);
 
+  const clearFilePointer = useCallback((button?: HTMLButtonElement | null, pointerId?: number) => {
+    window.clearTimeout(fileLongPressTimerRef.current);
+    if (button && pointerId !== undefined) {
+      try {
+        if (button.hasPointerCapture(pointerId)) button.releasePointerCapture(pointerId);
+      } catch {
+        // Pointer capture may already be gone once native dragging starts.
+      }
+    }
+    filePointerRef.current = null;
+  }, []);
+
+  const beginTransitFileDrag = useCallback((button: HTMLButtonElement, pointerId: number) => {
+    const current = filePointerRef.current;
+    if (!current || current.pointerId !== pointerId || current.nativeDragStarted) return;
+    current.nativeDragStarted = true;
+    setFileBubble("");
+    try {
+      if (button.hasPointerCapture(pointerId)) button.releasePointerCapture(pointerId);
+    } catch {
+      // Native drag can take ownership of the pointer before React observes it.
+    }
+    invoke("file_transit_start_drag").catch((reason) => {
+      window.clearTimeout(fileLongPressTimerRef.current);
+      filePointerRef.current = null;
+      showFileBubble(String(reason));
+      invoke<FileTransitStatus>("file_transit_status")
+        .then(setFileTransit)
+        .catch(() => undefined);
+    });
+  }, [showFileBubble]);
+
   const openPetMenu = async () => {
-    const position = await positionBesidePet(MENU_WIDTH, MENU_HEIGHT, 6);
+    const placement = await positionMenuBesidePet(MENU_WIDTH, MENU_HEIGHT, 6);
     try {
       await invoke("close_pet_menu_windows").catch(() => undefined);
       new WebviewWindow("pet-menu", {
-        url: "/?mode=menu", title: "桌宠菜单", width: MENU_WIDTH, height: MENU_HEIGHT,
-        x: position?.x, y: position?.y, decorations: false, transparent: true,
+        url: `/?mode=menu&side=${placement?.side ?? "right"}`, title: "桌宠菜单", width: MENU_WIDTH, height: MENU_HEIGHT,
+        x: placement?.position.x, y: placement?.position.y, decorations: false, transparent: true,
         backgroundColor: [0, 0, 0, 0], alwaysOnTop: true, skipTaskbar: true,
         shadow: false, resizable: false, focus: true,
       });
@@ -1093,6 +1370,22 @@ function Pet() {
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           const button = event.currentTarget as HTMLButtonElement;
+          if (fileTransitRef.current.holding) {
+            event.preventDefault();
+            clearFilePointer(button, filePointerRef.current?.pointerId);
+            filePointerRef.current = {
+              pointerId: event.pointerId,
+              x: event.clientX,
+              y: event.clientY,
+              nativeDragStarted: false,
+            };
+            event.currentTarget.setPointerCapture(event.pointerId);
+            window.clearTimeout(fileLongPressTimerRef.current);
+            fileLongPressTimerRef.current = window.setTimeout(() => {
+              beginTransitFileDrag(button, event.pointerId);
+            }, 420);
+            return;
+          }
           button.dataset.pointerX = String(event.clientX);
           button.dataset.pointerY = String(event.clientY);
           button.dataset.dragging = "false";
@@ -1100,6 +1393,10 @@ function Pet() {
         }}
         onPointerMove={(event) => {
           const button = event.currentTarget as HTMLButtonElement;
+          if (filePointerRef.current?.pointerId === event.pointerId) {
+            event.preventDefault();
+            return;
+          }
           if (!button.dataset.pointerX || button.dataset.dragging === "true") return;
           const distance = Math.hypot(
             event.clientX - Number(button.dataset.pointerX),
@@ -1127,6 +1424,13 @@ function Pet() {
         }}
         onPointerUp={(event) => {
           const button = event.currentTarget as HTMLButtonElement;
+          const transitPointer = filePointerRef.current;
+          if (transitPointer?.pointerId === event.pointerId) {
+            const nativeDragStarted = transitPointer.nativeDragStarted;
+            clearFilePointer(button, event.pointerId);
+            if (!nativeDragStarted) showFileBubble("你有一个文件在这里");
+            return;
+          }
           if (!button.dataset.pointerX && button.dataset.dragging !== "true") return;
           const dragged = button.dataset.dragging === "true";
           delete button.dataset.pointerX;
@@ -1140,6 +1444,10 @@ function Pet() {
         }}
         onPointerCancel={(event) => {
           const button = event.currentTarget as HTMLButtonElement;
+          if (filePointerRef.current?.pointerId === event.pointerId) {
+            clearFilePointer(button, event.pointerId);
+            return;
+          }
           if (!button.dataset.pointerX && button.dataset.dragging !== "true") return;
           const dragged = button.dataset.dragging === "true";
           delete button.dataset.pointerX;
@@ -1151,6 +1459,8 @@ function Pet() {
           className={`pet-image${animation.mirrored ? " mirrored" : ""}`}
           src={animation.assetUrl} alt={profile.petName} draggable={false} />}
       </button>
+      {fileDropHover && <div className="file-drop-hint">松手交给我</div>}
+      {fileBubble && <div className="pet-bubble">{fileBubble}</div>}
       {isSharing && <div className="sharing-badge">桌面正在分享</div>}
     </main>
   );

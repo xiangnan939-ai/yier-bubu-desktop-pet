@@ -16,6 +16,7 @@
     "core:webview:allow-create-webview-window",
     "process:allow-restart",
     "updater:default",
+    "autostart:default",
     "opener:default"
   ]
 }

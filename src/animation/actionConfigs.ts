@@ -19,6 +19,7 @@ const ACTION_CONFIGS: Record<string, ActionConfig> = {
   angry: { minimumDisplayMs: 1_200 },
   dance: { minimumDisplayMs: 1_500 },
   hot: { minimumDisplayMs: 1_500 },
+  hugging: { minimumDisplayMs: 1_500 },
   click: { minimumDisplayMs: 800 },
   drag: { minimumDisplayMs: 0 },
   drop: { minimumDisplayMs: 700 },

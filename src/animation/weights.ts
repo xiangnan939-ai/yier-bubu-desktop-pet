@@ -114,7 +114,7 @@ export function buildActionWeights(
 ) {
   const hasSharedAsset = (library.get("shared")?.length ?? 0) > 0;
   return [...library.entries()]
-    .filter(([action, assets]) => action !== "walk" && assets.length > 0)
+    .filter(([action, assets]) => action !== "walk" && action !== "hugging" && assets.length > 0)
     .map(([action, assets]) => {
       const weight = assets.length * BASE_WEIGHT_PER_ASSET
         + (MACRO_BOOSTS[macroState][action] ?? 0)

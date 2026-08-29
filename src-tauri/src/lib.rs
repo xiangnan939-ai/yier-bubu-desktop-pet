@@ -10,7 +10,7 @@ use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{ipc::Response, plugin::TauriPlugin, Emitter, Manager, Runtime};
-use tauri_plugin_autostart::{Builder as AutoStartBuilder, MacosLauncher, ManagerExt};
+use tauri_plugin_autostart::{Builder as AutoStartBuilder, MacosLauncher};
 #[cfg(not(target_os = "macos"))]
 use xcap::Monitor;
 
@@ -22,6 +22,8 @@ use objc2_core_graphics::{
 };
 
 mod cloud_binding;
+mod file_transit;
+mod system_status;
 mod updates;
 
 use cloud_binding::{
@@ -561,32 +563,6 @@ fn configure_webview_network() {
     std::env::set_var(KEY, direct_webview_network_arguments(&current));
 }
 
-fn should_ensure_autostart() -> bool {
-    !cfg!(debug_assertions) && std::env::var_os("YIER_BUBU_SKIP_AUTOSTART").is_none()
-}
-
-fn ensure_autostart_enabled<R: tauri::Runtime, M: Manager<R>>(manager: &M) {
-    if !should_ensure_autostart() {
-        return;
-    }
-
-    let autostart = manager.autolaunch();
-    match autostart.is_enabled() {
-        Ok(true) => {}
-        Ok(false) => {
-            if let Err(error) = autostart.enable() {
-                eprintln!("failed to enable autostart: {error}");
-            }
-        }
-        Err(error) => {
-            eprintln!("failed to read autostart status: {error}");
-            if let Err(enable_error) = autostart.enable() {
-                eprintln!("failed to enable autostart after status error: {enable_error}");
-            }
-        }
-    }
-}
-
 fn build_autostart_plugin<R: Runtime>() -> TauriPlugin<R> {
     let builder = AutoStartBuilder::new()
         .app_name(AUTOSTART_APP_NAME)
@@ -604,6 +580,7 @@ pub fn run() {
     let screen_state = ScreenServerState::default();
     let mut builder = tauri::Builder::default()
         .manage(screen_state)
+        .manage(system_status::SystemStatusState::default())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             activate_app(app);
         }))
@@ -615,7 +592,6 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 window.set_background_color(Some(tauri::utils::config::Color(0, 0, 0, 0)))?;
             }
-            ensure_autostart_enabled(app);
             let binding_manager =
                 BindingManager::new(app.handle().clone(), app.path().app_data_dir()?)
                     .map_err(std::io::Error::other)?;
@@ -644,6 +620,10 @@ pub fn run() {
             system_audio_playing,
             system_idle_seconds,
             device_status,
+            system_status::computer_status,
+            file_transit::file_transit_status,
+            file_transit::file_transit_store,
+            file_transit::file_transit_start_drag,
             updates::update_configuration,
             updates::check_app_update,
             updates::install_app_update
