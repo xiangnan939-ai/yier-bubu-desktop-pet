@@ -1,7 +1,8 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ const TRANSIT_DIR_NAME: &str = "file-transit";
 const TRANSIT_ITEMS_DIR_NAME: &str = "items";
 const TRANSIT_METADATA_NAME: &str = "holding.json";
 const DRAG_PREVIEW_PNG: &[u8] = include_bytes!("../icons/32x32.png");
+const DRAG_SETTLE_CHECKS_MS: [u64; 6] = [250, 500, 1_000, 1_500, 3_000, 5_000];
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,7 +34,7 @@ pub struct FileTransitDragResult {
     message: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TransitMetadata {
     file_name: String,
@@ -329,20 +331,49 @@ fn status_from_disk(app: &AppHandle) -> Result<FileTransitStatus, String> {
     }
 }
 
-fn clear_after_success(app: &AppHandle) -> Result<(), String> {
-    if let Some(metadata) = read_metadata(app)? {
-        if metadata.stored_path.exists() {
-            remove_entry(&metadata.stored_path)
-                .map_err(|error| format!("文件已经投放，但中转站源文件清理失败：{error}"))?;
-        }
-        cleanup_empty_item_parent(app, &metadata.stored_path);
+fn clear_missing_record_after_system_move(
+    app: &AppHandle,
+    metadata: &TransitMetadata,
+) -> Result<bool, String> {
+    if metadata.stored_path.exists() {
+        return Ok(false);
     }
     let path = metadata_path(app)?;
     if path.exists() {
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }
     emit_status(app);
-    Ok(())
+    cleanup_empty_item_parent(app, &metadata.stored_path);
+    Ok(true)
+}
+
+fn finish_external_drag_drop(app: AppHandle, metadata: TransitMetadata) {
+    thread::spawn(move || {
+        for delay_ms in DRAG_SETTLE_CHECKS_MS {
+            thread::sleep(Duration::from_millis(delay_ms));
+            if !metadata.stored_path.exists() {
+                break;
+            }
+        }
+
+        let (dropped, message) = match clear_missing_record_after_system_move(&app, &metadata) {
+            Ok(true) => (true, "文件已取出".to_string()),
+            Ok(false) => {
+                emit_status(&app);
+                (false, "系统没有确认剪切完成，文件还在桌宠这里".to_string())
+            }
+            Err(error) => (
+                false,
+                format!("系统已移走文件，但中转站记录清理失败：{error}"),
+            ),
+        };
+
+        let _ = app.emit_to(
+            "main",
+            "file-transit-drag-finished",
+            FileTransitDragResult { dropped, message },
+        );
+    });
 }
 
 #[tauri::command]
@@ -413,6 +444,7 @@ pub fn file_transit_start_drag(window: Window, app: AppHandle) -> Result<(), Str
         let app_for_callback = app.clone();
         let app_for_start_error = app.clone();
         let stored_path = metadata.stored_path.clone();
+        let metadata_for_callback = metadata.clone();
         window
             .run_on_main_thread(move || {
                 let result = drag::start_drag(
@@ -421,18 +453,20 @@ pub fn file_transit_start_drag(window: Window, app: AppHandle) -> Result<(), Str
                     drag::Image::Raw(DRAG_PREVIEW_PNG.to_vec()),
                     move |result, _cursor_position| {
                         let dropped = matches!(result, drag::DragResult::Dropped);
-                        let message = if dropped {
-                            match clear_after_success(&app_for_callback) {
-                                Ok(()) => "文件已取出".to_string(),
-                                Err(error) => error,
-                            }
-                        } else {
-                            "已取消取出，文件还在桌宠这里".to_string()
-                        };
+                        if dropped {
+                            finish_external_drag_drop(
+                                app_for_callback.clone(),
+                                metadata_for_callback.clone(),
+                            );
+                            return;
+                        }
                         let _ = app_for_callback.emit_to(
                             "main",
                             "file-transit-drag-finished",
-                            FileTransitDragResult { dropped, message },
+                            FileTransitDragResult {
+                                dropped,
+                                message: "已取消取出，文件还在桌宠这里".to_string(),
+                            },
                         );
                     },
                     drag::Options {
