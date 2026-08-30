@@ -130,6 +130,21 @@ jobs:
             --dir release-assets/updater-signatures
           node scripts/make-updater-json.mjs \
             "$VERSION" release-assets/updater-signatures "$BASE_URL" release-assets/latest.json
+      - name: 同步备用更新清单到仓库
+        shell: bash
+        run: |
+          git fetch origin main
+          git switch --force-create update-manifest origin/main
+          mkdir -p updater
+          cp release-assets/latest.json updater/latest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add updater/latest.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: update updater manifest for ${GITHUB_REF_NAME}"
+          git push origin HEAD:main || echo "::warning::备用更新清单未能推送到 main，Release 更新清单仍然有效"
       - name: 上传更新清单并公开发布
         shell: bash
         run: |

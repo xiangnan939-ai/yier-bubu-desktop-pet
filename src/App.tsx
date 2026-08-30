@@ -68,7 +68,7 @@ type AppUpdateCheck = {
 };
 type UpdateProgress = {
   updateType: "app" | "assets";
-  phase: "downloading" | "installing" | "complete";
+  phase: "checking" | "downloading" | "installing" | "complete";
   downloadedBytes: number;
   totalBytes: number | null;
 };
@@ -91,6 +91,7 @@ type FileTransitStatus = {
   storedPath: string | null;
   sizeBytes: number | null;
   placedAtMs: number | null;
+  isDirectory: boolean;
 };
 type FileTransitDragResult = {
   dropped: boolean;
@@ -191,6 +192,7 @@ function emptyFileTransitStatus(): FileTransitStatus {
     storedPath: null,
     sizeBytes: null,
     placedAtMs: null,
+    isDirectory: false,
   };
 }
 
@@ -497,6 +499,15 @@ function Settings() {
   useEffect(() => {
     const unlisten = listen<UpdateProgress>("update-download-progress", (event) => {
       setUpdateProgress(event.payload);
+      if (event.payload.phase === "checking") {
+        setCheckingUpdates(true);
+        setInstallingApp(false);
+        setUpdateMessage("正在连接更新服务…");
+      } else if (event.payload.phase === "downloading" || event.payload.phase === "installing") {
+        setCheckingUpdates(false);
+        setInstallingApp(true);
+        setUpdateMessage(event.payload.phase === "downloading" ? "正在下载更新…" : "正在验证并安装更新…");
+      }
     });
     return () => {
       unlisten.then((dispose) => dispose()).catch(() => undefined);
@@ -516,20 +527,19 @@ function Settings() {
   const checkUpdates = async () => {
     if (!updateConfig?.appUpdateEnabled || checkingUpdates || installingApp) return;
     setCheckingUpdates(true);
+    setInstallingApp(false);
     setUpdateProgress(null);
     setError("");
     setUpdateMessage("正在检查更新…");
     try {
-      const result = await invoke<AppUpdateCheck>("check_app_update");
+      const result = await invoke<AppUpdateCheck>("install_app_update");
       setAppUpdate(result);
       if (!result.available) {
         setUpdateMessage("已是最新版");
+        setUpdateProgress(null);
+        setInstallingApp(false);
         return;
       }
-      setCheckingUpdates(false);
-      setInstallingApp(true);
-      setUpdateMessage(`发现新版本 ${result.version ?? ""}，正在下载并安装…`);
-      await invoke("install_app_update");
       setUpdateMessage("更新安装完成，正在重新启动…");
       await relaunch();
     } catch (reason) {
@@ -631,7 +641,8 @@ function Settings() {
         <p>{updateMessage}</p>
         {updateProgress && <div className="update-progress" aria-live="polite">
           <div className="update-progress-label">
-            <span>更新 · {updateProgress.phase === "downloading" ? "正在下载"
+            <span>更新 · {updateProgress.phase === "checking" ? "正在连接更新服务"
+                : updateProgress.phase === "downloading" ? "正在下载"
                 : updateProgress.phase === "installing" ? "正在验证并安装" : "更新完成"
             }</span>
             <strong>{updateProgress.phase === "downloading" && updateProgress.totalBytes
