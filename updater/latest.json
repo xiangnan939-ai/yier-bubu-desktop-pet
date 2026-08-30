@@ -1,23 +1,23 @@
 {
-  "version": "0.5.32",
-  "notes": "一二布布私人桌宠 0.5.32",
-  "pub_date": "2026-08-30T03:53:43.581Z",
+  "version": "0.5.33",
+  "notes": "一二布布私人桌宠 0.5.33",
+  "pub_date": "2026-08-30T08:43:11.647Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdU5ZZjlPRGFEWnBZaG1SNkNSSm5nb2ZGdWVBd2x1WHl1LzErNzRROC9HQ2hHQkl1T0NOcXVPNURjS0IwU3E0NzQybFJGb0szbHNlRzViUFRLYnpTUmdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDYxNzIzCWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gLmFwcC50YXIuZ3oKcEo1cXFlTk5zZFVCTVVrejN2Uk5OUVR0aVk2OHJrbjlBNnRTaExOM014TE9PdFFYTm5EWndkU01ZenFwSGpLYlRDV2MySTFjOEMyK1VtQnhPcXRWQ1E9PQo=",
-      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.32_aarch64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdURabmdFUmdDVis3UVFpMlA3M0svbU1BQUFQMEpWVmN1TEI0QVFWbXNwSWQzRFI2S05YTFpEdzl3TG10QmFEMTNaU3l4NG1PRFl2S2p1TzBhaUFiTUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDc5MTUxCWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gLmFwcC50YXIuZ3oKc0Qzc0hkSnp2L1Y5eTVTMm0wNHNNVlYrcFJKQW1oeHY4WXgxT09JaUs1VmgxZUxOR2Y2UUUwcjVtV3E0SXZNcU1NTmIzSGZCWVpUVzlrcUlQNzc4RGc9PQo=",
+      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.33_aarch64.app.tar.gz"
     },
     "darwin-aarch64-app": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdU5ZZjlPRGFEWnBZaG1SNkNSSm5nb2ZGdWVBd2x1WHl1LzErNzRROC9HQ2hHQkl1T0NOcXVPNURjS0IwU3E0NzQybFJGb0szbHNlRzViUFRLYnpTUmdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDYxNzIzCWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gLmFwcC50YXIuZ3oKcEo1cXFlTk5zZFVCTVVrejN2Uk5OUVR0aVk2OHJrbjlBNnRTaExOM014TE9PdFFYTm5EWndkU01ZenFwSGpLYlRDV2MySTFjOEMyK1VtQnhPcXRWQ1E9PQo=",
-      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.32_aarch64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdURabmdFUmdDVis3UVFpMlA3M0svbU1BQUFQMEpWVmN1TEI0QVFWbXNwSWQzRFI2S05YTFpEdzl3TG10QmFEMTNaU3l4NG1PRFl2S2p1TzBhaUFiTUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDc5MTUxCWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gLmFwcC50YXIuZ3oKc0Qzc0hkSnp2L1Y5eTVTMm0wNHNNVlYrcFJKQW1oeHY4WXgxT09JaUs1VmgxZUxOR2Y2UUUwcjVtV3E0SXZNcU1NTmIzSGZCWVpUVzlrcUlQNzc4RGc9PQo=",
+      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.33_aarch64.app.tar.gz"
     },
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdUo0ak9aT3VOcUZENmx1NEYvVHIyNExyekd0STFxVHlBZmZFSFZQeDA0c1ZiQkRVQTBtalJvc0RsaWhtMndqNXBSTFVkVFhlcGJDOG1YUUl6ODFHc3dVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDYxOTk3CWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gXzAuNS4zMl94NjQtc2V0dXAuZXhlCkVvbG5NMUsvT3lXT2MwU2xJa294ZW5SZ2dSYjFvUUUzVEZxT1R3bDFwcStKRWY0aHRNazlsQjFoTzN5MGFodVFSWGdUVEJOVllSY1ZZUnl0dGhOK0NBPT0K",
-      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.32_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdUJydFBSWDJwWHR2SGgyV3lMZkxNYk4zWjRDVnhCWU9VMndTSzNkMk5RR2YwZ1lGQWVqdlR0aWVvTFFxUTRkc015ZDVaWGxIdzNuWUdHRTU0WDcwRWd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDc5MzYzCWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gXzAuNS4zM194NjQtc2V0dXAuZXhlCnJMVlk4YXZ0b3VRVTArTFhYLzVaZ1FWam5acWlUWHBHWjA3SndyV1E4SGFnZmlmazlrcis3L1pBd2xoanlZeUtsM0NXNVNJWmJmSlN4bHFiQk1FeURnPT0K",
+      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.33_x64-setup.exe"
     },
     "windows-x86_64-nsis": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdUo0ak9aT3VOcUZENmx1NEYvVHIyNExyekd0STFxVHlBZmZFSFZQeDA0c1ZiQkRVQTBtalJvc0RsaWhtMndqNXBSTFVkVFhlcGJDOG1YUUl6ODFHc3dVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDYxOTk3CWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gXzAuNS4zMl94NjQtc2V0dXAuZXhlCkVvbG5NMUsvT3lXT2MwU2xJa294ZW5SZ2dSYjFvUUUzVEZxT1R3bDFwcStKRWY0aHRNazlsQjFoTzN5MGFodVFSWGdUVEJOVllSY1ZZUnl0dGhOK0NBPT0K",
-      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.32_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMUV1YmZXM2tVdUJydFBSWDJwWHR2SGgyV3lMZkxNYk4zWjRDVnhCWU9VMndTSzNkMk5RR2YwZ1lGQWVqdlR0aWVvTFFxUTRkc015ZDVaWGxIdzNuWUdHRTU0WDcwRWd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MDc5MzYzCWZpbGU65LiA5LqM5biD5biD56eB5Lq65qGM5a6gXzAuNS4zM194NjQtc2V0dXAuZXhlCnJMVlk4YXZ0b3VRVTArTFhYLzVaZ1FWam5acWlUWHBHWjA3SndyV1E4SGFnZmlmazlrcis3L1pBd2xoanlZeUtsM0NXNVNJWmJmSlN4bHFiQk1FeURnPT0K",
+      "url": "https://github.com/xiangnan939-ai/yier-bubu-desktop-pet/releases/latest/download/yier-bubu_0.5.33_x64-setup.exe"
     }
   }
 }
